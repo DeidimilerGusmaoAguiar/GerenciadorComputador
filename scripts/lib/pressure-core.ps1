@@ -553,6 +553,8 @@ function New-PressureMonitorState {
 
         [switch]$FixedCadence,
 
+        [string[]]$CliHomeRoots = @(),
+
         [switch]$ProcessTerminationEnabled,
 
         [uint32]$DashboardProcessId = [uint32]$PID
@@ -602,6 +604,10 @@ function New-PressureMonitorState {
         DefenderRefreshAt = [datetime]::MinValue
         DefenderStatus = $null
         DefenderPreference = $null
+        CliHomeRoots = @(
+            if (@($CliHomeRoots).Count -gt 0) { $CliHomeRoots } else { @($env:USERPROFILE) }
+        )
+        CliHomes = @()
         Capabilities = [ordered]@{
             GpuEngine = $gpuEngineAvailable
             GpuProcessMemory = $gpuMemoryAvailable
@@ -1491,6 +1497,21 @@ function Get-PressureInsights {
                 CauseConfidence = 'média'
             })
         }
+
+        if ([int]$Defender.ExposedCliHomeCount -gt 0 -and $diskUnderPressure) {
+            $exposed = @($Defender.CliHomes | Where-Object { -not $_.Covered })
+            $total = @($Defender.CliHomes).Count
+            $rotulos = (@($exposed | Select-Object -First 6 | ForEach-Object { $_.Label }) -join ', ')
+            $insights.Add([pscustomobject]@{
+                Resource = 'disk'
+                Level = 1
+                Title = "$($exposed.Count) de $total perfis de CLI fora das exclusões"
+                Narrative = "Perfis expostos: $rotulos. Cada perfil mantém diretório próprio de estado, e a exclusão de um não cobre os outros."
+                Evidence = 'Contenção real de caminho contra ExclusionPath, mais exclusão do binário em ExclusionProcess; nomes de pasta não revelam o caminho completo.'
+                AttributionConfidence = 'alta'
+                CauseConfidence = 'média'
+            })
+        }
     }
 
     $cpuTop = @($Consumers.cpu | Select-Object -First 1)
@@ -2339,15 +2360,230 @@ $script:PressureToolchainExclusionMarkers = @(
         PathPatterns = @('npm-cache', '_npx')
         ProcessPatterns = @('node.exe')
     }
-    [pscustomobject]@{
-        # Aqui a exclusão de node.exe não ajuda: quem escreve o estado é o
-        # binário próprio de cada CLI, que não é node.exe.
-        Key = 'cli-state'
-        Label = 'estado das CLIs de IA'
-        PathPatterns = @('.claude', '.codex', '.gemini', '.grok')
-        ProcessPatterns = @('claude.exe', 'codex.exe')
-    }
 )
+
+# O estado das CLIs não entra na tabela acima de propósito. Um computador pode
+# ter vários perfis isolados da mesma CLI, e casamento por substring diria que
+# `.claude` cobre `.claude-pessoal`. A cobertura desses diretórios é avaliada
+# um por um em Get-PressureCliHomeCoverage.
+$script:PressureCliHomeProcessByPrefix = [ordered]@{
+    '.claude' = 'claude.exe'
+    '.codex' = 'codex.exe'
+    '.gemini' = 'gemini.exe'
+    '.grok' = 'grok.exe'
+}
+
+function ConvertTo-PressureExclusionRegex {
+    <#
+    .SYNOPSIS
+    Traduz um padrão de exclusão do antimalware para expressão regular.
+
+    .DESCRIPTION
+    Casamento por substring é enganoso aqui: `.claude` apareceria como
+    cobertura para `.claude-pessoal`, que na prática continua sendo varrido.
+    Esta função monta contenção real de caminho.
+
+    O curinga `*` cobre um único segmento, nunca atravessa barra. Um padrão
+    terminado em `\*` ou `*` no fim do nome vira prefixo do segmento.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Pattern)
+
+    $expanded = [Environment]::ExpandEnvironmentVariables($Pattern).Trim()
+    if ([string]::IsNullOrWhiteSpace($expanded)) {
+        return $null
+    }
+    if ($expanded.Contains('%')) {
+        # Variável não expandida — a exclusão não casa com nada no disco.
+        return $null
+    }
+
+    $normalized = $expanded.TrimEnd('\')
+    if ($normalized.EndsWith('\*')) {
+        $normalized = $normalized.Substring(0, $normalized.Length - 2)
+    }
+    $normalized = $normalized.TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+        return $null
+    }
+
+    $escaped = [regex]::Escape($normalized)
+    # \* é como o Escape deixa o curinga; cada um vale por um segmento apenas.
+    $escaped = $escaped.Replace('\*', '[^\\]*')
+    $escaped = $escaped.Replace('\?', '[^\\]')
+
+    return [regex]::new(
+        '^' + $escaped + '(\\|$)',
+        [Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+}
+
+function Test-PressureExclusionCoverage {
+    <#
+    .SYNOPSIS
+    Diz se um diretório está coberto por alguma exclusão de caminho.
+
+    .DESCRIPTION
+    Cobertura exige que a exclusão seja o próprio caminho ou um ancestral dele.
+    Um caminho mais fundo que a exclusão está coberto; um caminho irmão, não.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [string[]]$ExclusionPath = @()
+    )
+
+    $target = if ([string]::IsNullOrWhiteSpace($Path)) {
+        ''
+    } else {
+        $Path.Trim().TrimEnd('\')
+    }
+    if ([string]::IsNullOrWhiteSpace($target)) {
+        return [pscustomobject]@{ Covered = $false; MatchedBy = '' }
+    }
+
+    foreach ($pattern in @($ExclusionPath)) {
+        $regex = ConvertTo-PressureExclusionRegex -Pattern ([string]$pattern)
+        if ($null -eq $regex) {
+            continue
+        }
+        if ($regex.IsMatch($target)) {
+            return [pscustomobject]@{ Covered = $true; MatchedBy = [string]$pattern }
+        }
+    }
+
+    return [pscustomobject]@{ Covered = $false; MatchedBy = '' }
+}
+
+function Get-PressureCliHomeCandidates {
+    <#
+    .SYNOPSIS
+    Descobre os diretórios de estado das CLIs de IA presentes na máquina.
+
+    .DESCRIPTION
+    Um mesmo computador pode ter vários perfis isolados da mesma CLI, cada um
+    com seu diretório próprio, escolhido por variável de ambiente. Verificar
+    apenas o diretório padrão daria falsa sensação de cobertura.
+
+    A varredura é de um nível só em cada raiz informada, o que a torna barata o
+    bastante para rodar na mesma frequência da configuração do antimalware.
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$Roots = @(),
+        [string[]]$EnvironmentHomes = @(),
+        [string[]]$Patterns = @('.claude*', '.codex*', '.gemini*', '.grok*')
+    )
+
+    $found = [ordered]@{}
+
+    foreach ($root in @($Roots | Where-Object { $_ })) {
+        $resolvedRoot = try {
+            [IO.Path]::GetFullPath($root)
+        } catch {
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $resolvedRoot -PathType Container)) {
+            continue
+        }
+
+        foreach ($pattern in $Patterns) {
+            $matches = try {
+                Get-ChildItem -LiteralPath $resolvedRoot -Filter $pattern -Directory -Force -ErrorAction Stop
+            } catch {
+                @()
+            }
+            foreach ($entry in $matches) {
+                $found[$entry.FullName] = 'convenção'
+            }
+        }
+    }
+
+    # $home é variável automática somente-leitura do PowerShell; usar outro nome.
+    foreach ($environmentHome in @($EnvironmentHomes | Where-Object { $_ })) {
+        $resolved = try {
+            [IO.Path]::GetFullPath($environmentHome)
+        } catch {
+            continue
+        }
+        if (Test-Path -LiteralPath $resolved -PathType Container) {
+            $found[$resolved] = 'variável de ambiente'
+        }
+    }
+
+    return @(
+        foreach ($path in $found.Keys) {
+            [pscustomobject]@{
+                Path = [string]$path
+                # O rótulo é o nome da pasta: identifica o perfil sem revelar o
+                # caminho completo do usuário quando isto for para a interface.
+                Label = [IO.Path]::GetFileName([string]$path)
+                Source = [string]$found[$path]
+            }
+        }
+    )
+}
+
+function Get-PressureCliHomeCoverage {
+    <#
+    .SYNOPSIS
+    Cruza os diretórios de estado das CLIs com as exclusões declaradas.
+
+    .DESCRIPTION
+    Não percorre o conteúdo dos diretórios. Contar arquivos aqui somaria E/S
+    justamente no caminho que o painel aponta como problema.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$Homes = @(),
+        [string[]]$ExclusionPath = @(),
+        [string[]]$ExclusionProcess = @()
+    )
+
+    $processes = @(
+        $ExclusionProcess |
+            Where-Object { $_ } |
+            ForEach-Object { ([string]$_).ToLowerInvariant() }
+    )
+
+    return @(
+        foreach ($cliHome in $Homes) {
+            $coverage = Test-PressureExclusionCoverage `
+                -Path ([string]$cliHome.Path) `
+                -ExclusionPath $ExclusionPath
+
+            # A exclusão do binário da CLI também cobre o que ela escreve,
+            # onde quer que escreva.
+            $viaProcess = ''
+            if (-not $coverage.Covered) {
+                $label = ([string]$cliHome.Label).ToLowerInvariant()
+                foreach ($prefix in $script:PressureCliHomeProcessByPrefix.Keys) {
+                    if (-not $label.StartsWith($prefix)) {
+                        continue
+                    }
+                    $binary = ([string]$script:PressureCliHomeProcessByPrefix[$prefix]).ToLowerInvariant()
+                    if (@($processes | Where-Object { $_.EndsWith($binary) }).Count -gt 0) {
+                        $viaProcess = $binary
+                    }
+                    break
+                }
+            }
+
+            [pscustomobject]@{
+                Label = [string]$cliHome.Label
+                Source = [string]$cliHome.Source
+                Covered = [bool]($coverage.Covered -or -not [string]::IsNullOrEmpty($viaProcess))
+                CoveredBy = if ($coverage.Covered) {
+                    'caminho'
+                } elseif (-not [string]::IsNullOrEmpty($viaProcess)) {
+                    'processo'
+                } else {
+                    ''
+                }
+            }
+        }
+    )
+}
 
 function Get-PressureNextScheduledScan {
     <#
@@ -2454,6 +2690,7 @@ function Get-PressureDefenderState {
         $Preference = $null,
         [double]$EngineIoMBps = 0,
         [double]$EngineCpuPercent = 0,
+        [object[]]$CliHomes = @(),
         [datetime]$Now = (Get-Date)
     )
 
@@ -2474,6 +2711,8 @@ function Get-PressureDefenderState {
             EngineIoMBps = 0
             EngineCpuPercent = 0
             ToolchainGaps = @()
+            CliHomes = @()
+            ExposedCliHomeCount = 0
         }
     }
 
@@ -2509,6 +2748,13 @@ function Get-PressureDefenderState {
             }
         }
     }
+
+    $cliHomeCoverage = @(
+        Get-PressureCliHomeCoverage `
+            -Homes $CliHomes `
+            -ExclusionPath @(if ($null -ne $Preference) { $Preference.ExclusionPath } else { @() }) `
+            -ExclusionProcess @(if ($null -ne $Preference) { $Preference.ExclusionProcess } else { @() })
+    )
 
     $nextScan = if ($null -ne $scheduleDay -and $scheduleDay -ge 0 -and $scheduleDay -le 8) {
         Get-PressureNextScheduledScan `
@@ -2575,6 +2821,10 @@ function Get-PressureDefenderState {
                 -ExclusionPath @(if ($null -ne $Preference) { $Preference.ExclusionPath } else { @() }) `
                 -ExclusionProcess @(if ($null -ne $Preference) { $Preference.ExclusionProcess } else { @() })
         )
+        # Apenas rótulo e cobertura: o caminho completo revelaria o perfil do
+        # usuário, e o painel não expõe caminho.
+        CliHomes = $cliHomeCoverage
+        ExposedCliHomeCount = @($cliHomeCoverage | Where-Object { -not $_.Covered }).Count
     }
 }
 
@@ -2622,6 +2872,11 @@ function Update-PressureDefenderConfiguration {
     $State.DefenderStatus = $status
     $State.DefenderPreference = $preference
     $State.Capabilities.Defender = ($null -ne $status -or $null -ne $preference)
+    $State.CliHomes = @(
+        Get-PressureCliHomeCandidates `
+            -Roots $State.CliHomeRoots `
+            -EnvironmentHomes @($env:CLAUDE_CONFIG_DIR, $env:CODEX_HOME)
+    )
     $State.DefenderRefreshAt = $now.AddSeconds($State.DefenderRefreshSeconds)
 }
 
@@ -3505,7 +3760,8 @@ function Get-PressureSnapshot {
         -Status $State.DefenderStatus `
         -Preference $State.DefenderPreference `
         -EngineIoMBps ([double](($antimalwareProcesses | Measure-Object IoTotalMBps -Sum).Sum)) `
-        -EngineCpuPercent ([double](($antimalwareProcesses | Measure-Object CpuPercent -Sum).Sum))
+        -EngineCpuPercent ([double](($antimalwareProcesses | Measure-Object CpuPercent -Sum).Sum)) `
+        -CliHomes @($State.CliHomes)
     $baseInsights = Get-PressureInsights `
         -Assessment $assessment `
         -Metrics $metrics `

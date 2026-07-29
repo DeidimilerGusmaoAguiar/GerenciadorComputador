@@ -246,6 +246,34 @@ eles escrevem continua sendo varrido mesmo com `node.exe` excluído.
 Tratar as duas formas como equivalentes produziria lacuna falsa num caso e
 cobertura imaginária no outro.
 
+#### Contenção de caminho, não substring
+
+A comparação de caminhos usa contenção real: uma exclusão cobre um diretório
+quando é o próprio diretório ou um ancestral dele. Comparar por substring
+produziria erro grave e silencioso — `.claude` apareceria como cobertura de
+`.claude-pessoal`, que na prática continuaria sendo varrido.
+
+O curinga `*` vale por um único segmento e nunca atravessa barra, então
+`C:\Users\*\AppData\Roaming\npm` cobre o diretório de um perfil e não um
+subdiretório mais fundo. Padrão com variável de ambiente que não existe no
+sistema não cobre nada, e o painel o trata assim em vez de assumir intenção.
+
+#### Perfis isolados da mesma CLI
+
+Um mesmo computador costuma ter vários diretórios de estado da mesma CLI, um
+por conta ou por projeto, escolhidos por variável de ambiente na hora de
+iniciar. Verificar apenas o diretório padrão daria falsa sensação de cobertura.
+
+O painel descobre os candidatos por convenção de nome nas raízes configuradas,
+mais os valores atuais de `CLAUDE_CONFIG_DIR` e `CODEX_HOME`, e avalia cada um
+separadamente. A varredura é de um nível só e não percorre o conteúdo dos
+diretórios: contar arquivos ali somaria E/S justamente no caminho que o painel
+aponta como problema.
+
+Na interface e no snapshot aparecem apenas o nome da pasta e o resultado da
+cobertura. O caminho completo revelaria o perfil do usuário, e o painel não
+expõe caminho.
+
 ### Custo do próprio painel
 
 Uma ferramenta de medição que não aparece na própria medição é ponto cego. O

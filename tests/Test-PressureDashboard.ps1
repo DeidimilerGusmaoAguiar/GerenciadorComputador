@@ -757,28 +757,74 @@ $gaps = Get-PressureToolchainExclusionGaps `
     -ExclusionPath @('C:\Repos\legado', 'C:\Program Files (x86)\Microsoft Visual Studio') `
     -ExclusionProcess @('devenv.exe', 'msbuild.exe')
 Assert-PressureCondition `
-    -Condition (@($gaps).Count -eq 4) `
+    -Condition (@($gaps).Count -eq 3) `
     -Message 'Lista voltada ao toolchain antigo deve acusar todas as lacunas do toolchain Node'
 
 # ExclusionProcess vale para os arquivos abertos pelo processo, nao so para o
-# executavel: node.exe cobre npm-cache, mas nao cobre o estado das CLIs, que e
-# escrito por binarios proprios.
+# executavel: node.exe cobre npm-cache.
 $processoNode = Get-PressureToolchainExclusionGaps `
     -ExclusionPath @() `
     -ExclusionProcess @('node.exe', 'node_repl.exe')
 Assert-PressureCondition `
     -Condition (@($processoNode | Where-Object Key -eq 'npm-cache').Count -eq 0) `
     -Message 'Exclusao de processo node.exe deve cobrir o cache do npm'
-Assert-PressureCondition `
-    -Condition (@($processoNode | Where-Object Key -eq 'cli-state').Count -eq 1) `
-    -Message 'Exclusao de node.exe nao pode ser lida como cobertura do estado das CLIs'
 
-$processoCli = Get-PressureToolchainExclusionGaps `
-    -ExclusionPath @() `
-    -ExclusionProcess @('claude.exe', 'codex.exe')
+# --- contencao real de caminho ---
+# A raiz sintetica e D:\perfis para nao introduzir caminho de perfil de usuario
+# no repositorio; a logica exercitada e a mesma de C:\Users\<nome>.
+$contencao = @(
+    @{ Alvo = 'D:\perfis\ana\.claude-pessoal'; Excl = @('D:\perfis\ana\.claude'); Esperado = $false; Caso = 'irmao com prefixo comum nao pode contar como coberto' }
+    @{ Alvo = 'D:\perfis\ana\.claude'; Excl = @('D:\perfis\ana\.claude'); Esperado = $true; Caso = 'caminho identico deve cobrir' }
+    @{ Alvo = 'D:\perfis\ana\.claude\projects\x'; Excl = @('D:\perfis\ana\.claude'); Esperado = $true; Caso = 'ancestral deve cobrir descendente' }
+    @{ Alvo = 'D:\perfis\ana\.claude'; Excl = @('D:\perfis\ana\.claude\projects'); Esperado = $false; Caso = 'descendente nao pode cobrir ancestral' }
+    @{ Alvo = 'D:\perfis\ana\AppData\Roaming\npm'; Excl = @('D:\perfis\*\AppData\Roaming\npm'); Esperado = $true; Caso = 'curinga de um segmento deve casar o perfil'  }
+    @{ Alvo = 'D:\perfis\ana\sub\AppData\Roaming\npm'; Excl = @('D:\perfis\*\AppData\Roaming\npm'); Esperado = $false; Caso = 'curinga nao pode atravessar barra' }
+    @{ Alvo = 'D:\perfis\ana\.m2'; Excl = @('%VariavelQueNaoExiste%\.m2'); Esperado = $false; Caso = 'variavel inexistente nao expande e nao cobre nada' }
+    @{ Alvo = 'D:\Delphi7\Bin'; Excl = @('D:\Delphi*'); Esperado = $true; Caso = 'curinga parcial no fim do nome deve casar' }
+    @{ Alvo = 'C:\Empacotador\sub'; Excl = @('C:\Empacotador\*'); Esperado = $true; Caso = 'padrao terminado em barra-curinga deve cobrir o conteudo' }
+    @{ Alvo = 'C:\EmpacotadorOutro'; Excl = @('C:\Empacotador\*'); Esperado = $false; Caso = 'pasta com nome estendido nao pode ser coberta' }
+)
+foreach ($caso in $contencao) {
+    $r = Test-PressureExclusionCoverage -Path $caso.Alvo -ExclusionPath $caso.Excl
+    Assert-PressureCondition `
+        -Condition ($r.Covered -eq $caso.Esperado) `
+        -Message ('Cobertura de exclusao: ' + $caso.Caso)
+}
+
+# --- cobertura por perfil de CLI ---
+$homesFake = @(
+    [pscustomobject]@{ Path = 'D:\perfis\ana\.claude'; Label = '.claude'; Source = 'convenção' }
+    [pscustomobject]@{ Path = 'D:\perfis\ana\.claude-pessoal'; Label = '.claude-pessoal'; Source = 'convenção' }
+    [pscustomobject]@{ Path = 'D:\perfis\ana\.codex'; Label = '.codex'; Source = 'convenção' }
+)
+$porCaminho = Get-PressureCliHomeCoverage `
+    -Homes $homesFake `
+    -ExclusionPath @('D:\perfis\ana\.claude')
 Assert-PressureCondition `
-    -Condition (@($processoCli | Where-Object Key -eq 'cli-state').Count -eq 0) `
-    -Message 'Exclusao dos binarios das CLIs deve cobrir o estado delas'
+    -Condition (@($porCaminho | Where-Object { -not $_.Covered }).Count -eq 2) `
+    -Message 'Excluir um perfil nao pode marcar os demais como cobertos'
+Assert-PressureCondition `
+    -Condition (@($porCaminho | Where-Object { $_.Label -eq '.claude' }).CoveredBy -eq 'caminho') `
+    -Message 'Perfil coberto por caminho deve declarar a origem da cobertura'
+
+$porProcesso = Get-PressureCliHomeCoverage `
+    -Homes $homesFake `
+    -ExclusionPath @() `
+    -ExclusionProcess @('claude.exe')
+Assert-PressureCondition `
+    -Condition (
+        @($porProcesso | Where-Object { $_.Label -like '.claude*' -and $_.Covered }).Count -eq 2 -and
+        @($porProcesso | Where-Object { $_.Label -eq '.codex' -and -not $_.Covered }).Count -eq 1
+    ) `
+    -Message 'Exclusao do binario claude.exe cobre os perfis do Claude e nenhum do Codex'
+Assert-PressureCondition `
+    -Condition (@($porProcesso | Where-Object { $_.Label -eq '.claude' }).CoveredBy -eq 'processo') `
+    -Message 'Perfil coberto por processo deve declarar a origem da cobertura'
+
+$semNada = Get-PressureCliHomeCoverage -Homes $homesFake
+Assert-PressureCondition `
+    -Condition (@($semNada | Where-Object { $_.Covered }).Count -eq 0) `
+    -Message 'Sem exclusao alguma nenhum perfil pode aparecer como coberto'
 
 $coveredGaps = Get-PressureToolchainExclusionGaps `
     -ExclusionPath @(
@@ -815,7 +861,7 @@ Assert-PressureCondition `
     -Condition ($scanningState.ScheduleDayName -eq 'quinta-feira') `
     -Message 'Estado do antimalware deve traduzir o dia agendado'
 Assert-PressureCondition `
-    -Condition (@($scanningState.ToolchainGaps).Count -eq 4) `
+    -Condition (@($scanningState.ToolchainGaps).Count -eq 3) `
     -Message 'Estado do antimalware deve carregar as lacunas de exclusao'
 
 # O provedor real desta plataforma devolve TimeSpan; outras devolvem DateTime.
