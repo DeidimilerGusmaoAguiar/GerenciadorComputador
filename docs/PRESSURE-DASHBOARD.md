@@ -110,6 +110,25 @@ pwsh -NoProfile -File .\scripts\start-pressure-dashboard.ps1 `
 pwsh -NoProfile -File .\scripts\start-pressure-dashboard.ps1 -NoHistory
 ```
 
+### Gravação desassistida
+
+O painel coleta **sob demanda**: uma amostra por requisição a `/api/snapshot`.
+Isso é adequado para observação ao vivo e inadequado para capturar um episódio
+que começa em horário conhecido, porque a coleta passa a depender de uma aba
+aberta no navegador. Aba fechada ou congelada pelo navegador significa nenhuma
+amostra, mesmo com o servidor no ar.
+
+Para captura desassistida existe um gravador dedicado, que coleta por conta
+própria, sem abrir porta e sem servir interface:
+
+```powershell
+pwsh -NoProfile -File .\scripts\record-pressure.ps1 -Minutes 120
+```
+
+Ele usa a mesma cadência adaptativa, o mesmo formato de histórico e a mesma
+vigília do processo pai. Termina por duração, por `Ctrl+C` ou quando quem o
+iniciou desaparece. Não encerra nenhum processo.
+
 Quem apaga é um script separado, com dry-run por padrão:
 
 ```powershell

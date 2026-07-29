@@ -976,6 +976,22 @@ Assert-PressureCondition `
     -Condition (-not (Test-PressureParentAlive -Watch $ghostWatch)) `
     -Message 'Pai inexistente deve ser reportado como ausente'
 
+$recorderContent = [IO.File]::ReadAllText(
+    (Join-Path $repoRoot 'scripts\record-pressure.ps1')
+)
+Assert-PressureCondition `
+    -Condition (-not ($recorderContent -match 'HttpListener')) `
+    -Message 'O gravador de fundo nao pode abrir porta nem servir interface'
+Assert-PressureCondition `
+    -Condition $recorderContent.Contains('Test-PressureParentAlive') `
+    -Message 'O gravador deve encerrar quando o processo que o iniciou desaparece'
+Assert-PressureCondition `
+    -Condition $recorderContent.Contains('ConvertTo-PressureHistoryRecord') `
+    -Message 'O gravador deve usar o mesmo formato de historico do painel'
+Assert-PressureCondition `
+    -Condition (-not ($recorderContent -match 'Stop-Process')) `
+    -Message 'O gravador nao pode encerrar processo algum'
+
 $serverContent = [IO.File]::ReadAllText(
     (Join-Path $repoRoot 'scripts\start-pressure-dashboard.ps1')
 )
