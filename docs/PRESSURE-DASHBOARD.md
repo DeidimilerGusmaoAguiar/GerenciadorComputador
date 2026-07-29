@@ -229,6 +229,23 @@ de estado das CLIs de IA. A ausência desses caminhos não é apresentada como
 erro: é uma lacuna informada, cuja correção envolve troca real de risco e
 decisão de quem administra a máquina.
 
+A comparação leva em conta os dois tipos de exclusão, porque eles têm alcances
+diferentes:
+
+- **Exclusão de caminho** cobre os arquivos daquele diretório, independentemente
+  de qual processo os abre.
+- **Exclusão de processo** cobre os arquivos **abertos por** aquele processo, e
+  não apenas o executável dele.
+
+A distinção muda o resultado na prática. `npm` e `npx` são JavaScript executado
+dentro do `node.exe`, então uma exclusão de processo para `node.exe` já cobre o
+cache do npm sem precisar de exclusão de caminho. O mesmo não vale para o estado
+das CLIs de IA: `claude.exe` e `codex.exe` são binários próprios, então o que
+eles escrevem continua sendo varrido mesmo com `node.exe` excluído.
+
+Tratar as duas formas como equivalentes produziria lacuna falsa num caso e
+cobertura imaginária no outro.
+
 ### Custo do próprio painel
 
 Uma ferramenta de medição que não aparece na própria medição é ponto cego. O

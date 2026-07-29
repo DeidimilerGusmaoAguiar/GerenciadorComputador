@@ -760,6 +760,26 @@ Assert-PressureCondition `
     -Condition (@($gaps).Count -eq 4) `
     -Message 'Lista voltada ao toolchain antigo deve acusar todas as lacunas do toolchain Node'
 
+# ExclusionProcess vale para os arquivos abertos pelo processo, nao so para o
+# executavel: node.exe cobre npm-cache, mas nao cobre o estado das CLIs, que e
+# escrito por binarios proprios.
+$processoNode = Get-PressureToolchainExclusionGaps `
+    -ExclusionPath @() `
+    -ExclusionProcess @('node.exe', 'node_repl.exe')
+Assert-PressureCondition `
+    -Condition (@($processoNode | Where-Object Key -eq 'npm-cache').Count -eq 0) `
+    -Message 'Exclusao de processo node.exe deve cobrir o cache do npm'
+Assert-PressureCondition `
+    -Condition (@($processoNode | Where-Object Key -eq 'cli-state').Count -eq 1) `
+    -Message 'Exclusao de node.exe nao pode ser lida como cobertura do estado das CLIs'
+
+$processoCli = Get-PressureToolchainExclusionGaps `
+    -ExclusionPath @() `
+    -ExclusionProcess @('claude.exe', 'codex.exe')
+Assert-PressureCondition `
+    -Condition (@($processoCli | Where-Object Key -eq 'cli-state').Count -eq 0) `
+    -Message 'Exclusao dos binarios das CLIs deve cobrir o estado delas'
+
 $coveredGaps = Get-PressureToolchainExclusionGaps `
     -ExclusionPath @(
         'D:\ferramentas\nodejs',

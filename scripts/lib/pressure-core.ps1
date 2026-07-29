@@ -2330,16 +2330,22 @@ $script:PressureToolchainExclusionMarkers = @(
         ProcessPatterns = @()
     }
     [pscustomobject]@{
+        # `npm` e `npx` são JavaScript executado dentro do node, então uma
+        # exclusão de processo para node.exe já cobre a leitura e a escrita
+        # nesta pasta: ExclusionProcess vale para os arquivos abertos pelo
+        # processo, não apenas para o executável.
         Key = 'npm-cache'
         Label = 'cache npm'
         PathPatterns = @('npm-cache', '_npx')
-        ProcessPatterns = @()
+        ProcessPatterns = @('node.exe')
     }
     [pscustomobject]@{
+        # Aqui a exclusão de node.exe não ajuda: quem escreve o estado é o
+        # binário próprio de cada CLI, que não é node.exe.
         Key = 'cli-state'
         Label = 'estado das CLIs de IA'
         PathPatterns = @('.claude', '.codex', '.gemini', '.grok')
-        ProcessPatterns = @()
+        ProcessPatterns = @('claude.exe', 'codex.exe')
     }
 )
 
