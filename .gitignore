@@ -1,0 +1,43 @@
+# Dados gerados nesta máquina
+/reports/*
+!/reports/.gitkeep
+/quarantine/*
+!/quarantine/.gitkeep
+/local/
+
+# Logs, inventários e backups operacionais
+*.log
+*.jsonl
+*.reg
+*.dmp
+*.bak
+*.tmp
+
+# Segredos e configurações locais
+.env
+.env.*
+!.env.example
+/.codex/
+/.gsd/
+/.agents/skills/gsd-*/
+AGENTS.override.md
+CLAUDE.local.md
+.claude/settings.local.json
+*.key
+*.pem
+*.pfx
+*.p12
+*.kdbx
+
+# PowerShell e cobertura
+TestResults/
+coverage/
+*.clixml
+
+# IDE e sistema operacional
+.vs/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

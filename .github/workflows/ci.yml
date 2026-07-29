@@ -1,0 +1,21 @@
+name: PowerShell safety checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  public-surface:
+    runs-on: windows-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Validate public surface
+        shell: pwsh
+        run: ./tests/Test-PublicSurface.ps1

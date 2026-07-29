@@ -1,0 +1,21 @@
+# Dados locais e potencialmente sensíveis
+/reports/
+/quarantine/
+/local/
+/.codex/
+/.gsd/
+/.agents/skills/gsd-*/
+
+# Segredos e artefatos operacionais
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+*.kdbx
+*.reg
+*.jsonl
+*.dmp
+*.clixml

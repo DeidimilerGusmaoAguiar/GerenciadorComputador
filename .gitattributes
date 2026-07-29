@@ -1,0 +1,16 @@
+* text=auto
+
+# PowerShell no Windows
+*.ps1 text eol=crlf
+*.psm1 text eol=crlf
+*.psd1 text eol=crlf
+
+# Configuracao e documentacao portaveis
+*.md text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+.geminiignore text eol=lf

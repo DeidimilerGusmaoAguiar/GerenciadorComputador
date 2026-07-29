@@ -1,0 +1,4 @@
+# Staging para arquivos antes do delete definitivo.
+# Cada limpeza cria uma pasta <YYYY-MM-DD_HHmm>/ com manifest.json
+# preservando o path original para reversão.
+# Retenção default: 7 dias.

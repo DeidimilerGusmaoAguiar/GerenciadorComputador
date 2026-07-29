@@ -1,0 +1,3 @@
+# Diretório para relatórios dos agentes.
+# Cada agente escreve aqui um <agent>_<YYYY-MM-DD_HHmm>.md ou .json.
+# Logs append-only: restore-points.log
