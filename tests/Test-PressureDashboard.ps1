@@ -780,9 +780,9 @@ $contencao = @(
     @{ Alvo = 'D:\perfis\ana\AppData\Roaming\npm'; Excl = @('D:\perfis\*\AppData\Roaming\npm'); Esperado = $true; Caso = 'curinga de um segmento deve casar o perfil'  }
     @{ Alvo = 'D:\perfis\ana\sub\AppData\Roaming\npm'; Excl = @('D:\perfis\*\AppData\Roaming\npm'); Esperado = $false; Caso = 'curinga nao pode atravessar barra' }
     @{ Alvo = 'D:\perfis\ana\.m2'; Excl = @('%VariavelQueNaoExiste%\.m2'); Esperado = $false; Caso = 'variavel inexistente nao expande e nao cobre nada' }
-    @{ Alvo = 'D:\Delphi7\Bin'; Excl = @('D:\Delphi*'); Esperado = $true; Caso = 'curinga parcial no fim do nome deve casar' }
-    @{ Alvo = 'C:\Empacotador\sub'; Excl = @('C:\Empacotador\*'); Esperado = $true; Caso = 'padrao terminado em barra-curinga deve cobrir o conteudo' }
-    @{ Alvo = 'C:\EmpacotadorOutro'; Excl = @('C:\Empacotador\*'); Esperado = $false; Caso = 'pasta com nome estendido nao pode ser coberta' }
+    @{ Alvo = 'D:\Ferramenta7\Bin'; Excl = @('D:\Ferramenta*'); Esperado = $true; Caso = 'curinga parcial no fim do nome deve casar' }
+    @{ Alvo = 'C:\Pacote\sub'; Excl = @('C:\Pacote\*'); Esperado = $true; Caso = 'padrao terminado em barra-curinga deve cobrir o conteudo' }
+    @{ Alvo = 'C:\PacoteOutro'; Excl = @('C:\Pacote\*'); Esperado = $false; Caso = 'pasta com nome estendido nao pode ser coberta' }
 )
 foreach ($caso in $contencao) {
     $r = Test-PressureExclusionCoverage -Path $caso.Alvo -ExclusionPath $caso.Excl
