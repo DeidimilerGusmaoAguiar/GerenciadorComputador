@@ -71,7 +71,8 @@ $state = New-PressureMonitorState `
 $writer = New-PressureHistoryWriter `
     -Directory $resolvedHistoryDirectory `
     -RetentionDays $HistoryRetentionDays `
-    -MaxMB $HistoryMaxMB
+    -MaxMB $HistoryMaxMB `
+    -Tag 'gravador'
 
 $parentWatch = if ($NoParentWatch) {
     [pscustomobject]@{

@@ -515,7 +515,22 @@ try {
         -RetentionDays 7 `
         -MaxMB 1 `
         -FlushSeconds 60 `
+        -Tag 'teste' `
         -Now $now
+    Assert-PressureCondition `
+        -Condition ((Split-Path (Get-PressureHistoryFilePath -Writer $writer -Now $now) -Leaf) -eq 'pressure_2026-07-29_teste.jsonl') `
+        -Message 'Arquivo de historico deve carregar a identidade do coletor'
+
+    $semTag = New-PressureHistoryWriter -Directory $historyRoot -Now $now
+    Assert-PressureCondition `
+        -Condition ((Split-Path (Get-PressureHistoryFilePath -Writer $semTag -Now $now) -Leaf) -eq 'pressure_2026-07-29.jsonl') `
+        -Message 'Sem identidade declarada o nome do arquivo permanece o antigo'
+
+    $comFallback = New-PressureHistoryWriter -Directory $historyRoot -Tag 'painel' -Now $now
+    $comFallback.FallbackTag = 'painel-p4242'
+    Assert-PressureCondition `
+        -Condition ((Split-Path (Get-PressureHistoryFilePath -Writer $comFallback -Now $now) -Leaf) -eq 'pressure_2026-07-29_painel-p4242.jsonl') `
+        -Message 'Disputa de handle deve redirecionar para arquivo com sufixo de PID'
 
     $fakeSnapshot = [pscustomobject]@{
         GeneratedAt = $now.ToString('o')
@@ -649,6 +664,44 @@ try {
     Assert-PressureCondition `
         -Condition (Test-Path -LiteralPath $historyFile) `
         -Message 'Remocao nunca pode levar o arquivo do dia corrente'
+
+    # Disputa real de handle: o arquivo alvo fica travado por outro processo e a
+    # amostra nao pode ser descartada em silencio.
+    $disputaWriter = New-PressureHistoryWriter `
+        -Directory $historyRoot `
+        -FlushSeconds 60 `
+        -Tag 'disputa' `
+        -Now $now
+    $alvoDisputa = Get-PressureHistoryFilePath -Writer $disputaWriter -Now $now
+    Set-Content -LiteralPath $alvoDisputa -Value '{"kind":"sample"}' -Encoding utf8
+    $trava = [IO.File]::Open(
+        $alvoDisputa,
+        [IO.FileMode]::Open,
+        [IO.FileAccess]::ReadWrite,
+        [IO.FileShare]::None
+    )
+    try {
+        $gravadas = Add-PressureHistoryRecord `
+            -Writer $disputaWriter `
+            -Record $record `
+            -Now $now `
+            -Flush
+        Assert-PressureCondition `
+            -Condition ($gravadas -eq 1) `
+            -Message 'Disputa de handle deve gravar no arquivo alternativo, nao descartar'
+        Assert-PressureCondition `
+            -Condition ($disputaWriter.DroppedLines -eq 0) `
+            -Message 'Nenhuma amostra pode ser contada como descartada apos o desvio'
+        Assert-PressureCondition `
+            -Condition ($disputaWriter.FallbackTag -like 'disputa-p*') `
+            -Message 'O desvio deve registrar a identidade alternativa usada'
+        $alternativo = Get-PressureHistoryFilePath -Writer $disputaWriter -Now $now
+        Assert-PressureCondition `
+            -Condition ((Test-Path -LiteralPath $alternativo) -and $alternativo -ne $alvoDisputa) `
+            -Message 'O arquivo alternativo deve existir e ser distinto do disputado'
+    } finally {
+        $trava.Dispose()
+    }
 
     $disabledWriter = New-PressureHistoryWriter -Directory $historyRoot -Disabled
     $disabledFlush = Add-PressureHistoryRecord `

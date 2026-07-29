@@ -99,6 +99,11 @@ mais uma linha de abertura e outra de encerramento por sessão.
 - A escrita é **em lote**, uma vez por minuto, e não a cada amostra. Gravar de
   cinco em cinco segundos produziria E/S pequena e contínua — exatamente o
   padrão que este painel existe para diagnosticar.
+- O nome do arquivo carrega a identidade do coletor — `_painel` ou `_gravador`.
+  Dois coletores no mesmo arquivo diário disputariam o handle, e a amostra
+  perdida não voltaria. Se ainda assim houver disputa, a escrita é desviada para
+  um arquivo com sufixo de PID em vez de ser descartada, e o desvio fica
+  registrado no estado do escritor.
 - O conteúdo é numérico, mais nome de processo. Linha de comando, caminho de
   executável e endereço remoto não entram, como no restante do painel.
 - Retenção padrão de 7 dias ou 50 MB, o que vier primeiro.

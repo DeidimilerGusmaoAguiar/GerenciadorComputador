@@ -167,6 +167,7 @@ $historyWriter = New-PressureHistoryWriter `
     -Directory $resolvedHistoryDirectory `
     -RetentionDays $HistoryRetentionDays `
     -MaxMB $HistoryMaxMB `
+    -Tag 'painel' `
     -Disabled:$NoHistory
 if ($historyWriter.Enabled) {
     Write-Host (

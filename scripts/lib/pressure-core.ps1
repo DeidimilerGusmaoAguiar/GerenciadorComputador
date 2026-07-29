@@ -3116,6 +3116,11 @@ function New-PressureHistoryWriter {
         [ValidateRange(5, 3600)]
         [int]$FlushSeconds = 60,
 
+        # Identifica quem escreve. Dois coletores no mesmo arquivo diário
+        # disputariam o handle, e a amostra perdida não voltaria.
+        [ValidatePattern('^[a-z0-9-]{0,24}$')]
+        [string]$Tag = '',
+
         [datetime]$Now = (Get-Date),
 
         [switch]$Disabled
@@ -3123,6 +3128,8 @@ function New-PressureHistoryWriter {
 
     [pscustomobject]@{
         Directory = [IO.Path]::GetFullPath($Directory)
+        Tag = $Tag
+        FallbackTag = ''
         Enabled = -not [bool]$Disabled
         RetentionDays = $RetentionDays
         MaxBytes = [double]$MaxMB * 1MB
@@ -3132,6 +3139,7 @@ function New-PressureHistoryWriter {
         NextRetentionAt = [datetime]::MinValue
         PendingCleanup = @()
         WrittenLines = 0
+        DroppedLines = 0
         LastError = ''
     }
 }
@@ -3143,7 +3151,14 @@ function Get-PressureHistoryFilePath {
         [datetime]$Now = (Get-Date)
     )
 
-    Join-Path $Writer.Directory ("pressure_{0:yyyy-MM-dd}.jsonl" -f $Now)
+    $tag = if (-not [string]::IsNullOrWhiteSpace($Writer.FallbackTag)) {
+        [string]$Writer.FallbackTag
+    } else {
+        [string]$Writer.Tag
+    }
+    $suffix = if ([string]::IsNullOrWhiteSpace($tag)) { '' } else { "_$tag" }
+
+    Join-Path $Writer.Directory ("pressure_{0:yyyy-MM-dd}{1}.jsonl" -f $Now, $suffix)
 }
 
 function Get-PressureHistoryExpired {
@@ -3184,13 +3199,16 @@ function Get-PressureHistoryExpired {
         return @()
     }
 
-    $currentName = ("pressure_{0:yyyy-MM-dd}.jsonl" -f $Now)
+    # Protege todos os arquivos do dia corrente, de qualquer coletor: o nome
+    # carrega identidade, então comparar por nome exato deixaria de proteger o
+    # arquivo que outro coletor está escrevendo agora.
+    $currentPrefix = ("pressure_{0:yyyy-MM-dd}" -f $Now)
     $expired = [Collections.Generic.List[object]]::new()
     $expiredKeys = @{}
     $cutoff = $Now.AddDays(-$RetentionDays)
 
     foreach ($file in $files) {
-        if ($file.Name -eq $currentName) {
+        if ($file.Name.StartsWith($currentPrefix, [StringComparison]::OrdinalIgnoreCase)) {
             continue
         }
         if ($file.LastWriteTime -lt $cutoff) {
@@ -3217,7 +3235,10 @@ function Get-PressureHistoryExpired {
         if ($totalBytes -le $MaxBytes) {
             break
         }
-        if ($file.Name -eq $currentName -or $expiredKeys.ContainsKey($file.FullName)) {
+        if (
+            $file.Name.StartsWith($currentPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+            $expiredKeys.ContainsKey($file.FullName)
+        ) {
             continue
         }
 
@@ -3251,26 +3272,42 @@ function Save-PressureHistoryBuffer {
     }
 
     $lines = @($Writer.Buffer.ToArray())
-    try {
-        if (-not (Test-Path -LiteralPath $Writer.Directory -PathType Container)) {
-            New-Item -ItemType Directory -Path $Writer.Directory -Force | Out-Null
+    $written = $false
+    # Duas tentativas: a segunda troca para um arquivo com sufixo de PID. Assim
+    # uma disputa de handle com outro coletor não descarta amostra em silêncio.
+    foreach ($attempt in 1, 2) {
+        try {
+            if (-not (Test-Path -LiteralPath $Writer.Directory -PathType Container)) {
+                New-Item -ItemType Directory -Path $Writer.Directory -Force | Out-Null
+            }
+            $path = Get-PressureHistoryFilePath -Writer $Writer -Now $Now
+            [IO.File]::AppendAllLines(
+                $path,
+                [string[]]$lines,
+                [Text.UTF8Encoding]::new($false)
+            )
+            $written = $true
+            $Writer.LastError = ''
+            break
+        } catch {
+            $Writer.LastError = [string]$_.Exception.Message
+            if ($attempt -eq 1 -and [string]::IsNullOrWhiteSpace($Writer.FallbackTag)) {
+                $base = if ([string]::IsNullOrWhiteSpace($Writer.Tag)) { 'p' } else { "$($Writer.Tag)-p" }
+                $Writer.FallbackTag = "$base$PID"
+                continue
+            }
+            break
         }
-        $path = Get-PressureHistoryFilePath -Writer $Writer -Now $Now
-        [IO.File]::AppendAllLines(
-            $path,
-            [string[]]$lines,
-            [Text.UTF8Encoding]::new($false)
-        )
-        $Writer.Buffer.Clear()
+    }
+
+    $Writer.Buffer.Clear()
+    $Writer.NextFlushAt = $Now.AddSeconds($Writer.FlushSeconds)
+    if ($written) {
         $Writer.WrittenLines = [int]$Writer.WrittenLines + $lines.Count
-        $Writer.NextFlushAt = $Now.AddSeconds($Writer.FlushSeconds)
-        $Writer.LastError = ''
-    } catch {
-        # Histórico é observabilidade, não missão crítica: falha de escrita não
-        # pode derrubar o painel nem impedir a próxima coleta.
-        $Writer.Buffer.Clear()
-        $Writer.NextFlushAt = $Now.AddSeconds($Writer.FlushSeconds)
-        $Writer.LastError = [string]$_.Exception.Message
+    } else {
+        # Histórico é observabilidade, não missão crítica: a coleta segue. Mas o
+        # descarte fica contado, para não passar por gravação completa.
+        $Writer.DroppedLines = [int]$Writer.DroppedLines + $lines.Count
         return 0
     }
 
