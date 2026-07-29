@@ -298,6 +298,18 @@ Na interface e no snapshot aparecem apenas o nome da pasta e o resultado da
 cobertura. O caminho completo revelaria o perfil do usuário, e o painel não
 expõe caminho.
 
+Quando o caminho completo é justamente o que se precisa — para abrir um chamado,
+por exemplo — existe um relatório local dedicado:
+
+```powershell
+pwsh -NoProfile -File .\scripts\report-exclusion-coverage.ps1 -ExtraRoots 'C:\Repos'
+```
+
+Ele mede volume por diretório, cruza com as exclusões, monta o bloco pronto para
+colar no chamado e grava em `reports\`, fora do controle de versão. É somente
+leitura: nenhuma configuração de antimalware é alterada, porque em máquina
+gerenciada essa decisão é da organização.
+
 ### Custo do próprio painel
 
 Uma ferramenta de medição que não aparece na própria medição é ponto cego. O

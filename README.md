@@ -211,6 +211,7 @@ pwsh -NoProfile -File .\scripts\new-cleanup-checkpoint.ps1 `
 | `start-pressure-dashboard.ps1` | Painel local de CPU, memória, disco, GPU, rede e processos | Não |
 | `stop-pressure-cli-session.ps1` | Dry-run ou encerramento nominal de árvore órfã revalidada | Só com `-Execute` |
 | `record-pressure.ps1` | Gravação desassistida do histórico de pressão, sem servidor nem navegador | Não |
+| `report-exclusion-coverage.ps1` | Relatório local de cobertura das exclusões do antimalware | Não |
 | `remove-pressure-history.ps1` | Dry-run ou aplicação da retenção do histórico do painel | Só com `-Execute` |
 
 A compactação de VHDX do Docker não é automatizada: ela exige interromper
