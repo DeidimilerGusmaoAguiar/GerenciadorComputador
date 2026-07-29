@@ -1041,9 +1041,38 @@ Assert-PressureCondition `
 Assert-PressureCondition `
     -Condition $recorderContent.Contains('ConvertTo-PressureHistoryRecord') `
     -Message 'O gravador deve usar o mesmo formato de historico do painel'
+# Casamento por texto acusaria ate a mencao em comentario. O que importa e se
+# existe chamada de fato, entao a verificacao usa a arvore sintatica.
+$recorderTokens = $null
+$recorderErrors = $null
+$recorderAst = [Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $repoRoot 'scripts\record-pressure.ps1'),
+    [ref]$recorderTokens,
+    [ref]$recorderErrors
+)
 Assert-PressureCondition `
-    -Condition (-not ($recorderContent -match 'Stop-Process')) `
+    -Condition (@($recorderErrors).Count -eq 0) `
+    -Message 'O gravador deve ter sintaxe PowerShell valida'
+$recorderCommands = @(
+    $recorderAst.FindAll(
+        { param($node) $node -is [Management.Automation.Language.CommandAst] },
+        $true
+    ) |
+        ForEach-Object { $_.GetCommandName() } |
+        Where-Object { $_ }
+)
+Assert-PressureCondition `
+    -Condition ('Stop-Process' -notin $recorderCommands) `
     -Message 'O gravador nao pode encerrar processo algum'
+Assert-PressureCondition `
+    -Condition ('Remove-Item' -notin $recorderCommands) `
+    -Message 'O gravador nao pode remover arquivo algum'
+Assert-PressureCondition `
+    -Condition ($recorderContent -match 'parar-gravacao\.flag') `
+    -Message 'O gravador deve oferecer parada por sinalizador, sem encerrar processo'
+Assert-PressureCondition `
+    -Condition ($recorderContent -match '\$sinalizadoEm -ge \$startedAt') `
+    -Message 'Sinalizador anterior ao inicio nao pode impedir uma nova gravacao'
 
 $serverContent = [IO.File]::ReadAllText(
     (Join-Path $repoRoot 'scripts\start-pressure-dashboard.ps1')

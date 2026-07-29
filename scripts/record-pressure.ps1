@@ -44,6 +44,13 @@ param(
 
     [switch]$NoParentWatch,
 
+    # Interruptor de parada sem encerrar processo. Um arquivo criado neste
+    # caminho depois do inicio faz o gravador sair sozinho no proximo ciclo.
+    # Sem isso, parar uma gravacao longa exigiria Stop-Process, que o contrato
+    # deste repositorio so admite com autorizacao nominal.
+    [AllowEmptyString()]
+    [string]$StopFile = '',
+
     [switch]$Quiet
 )
 
@@ -85,6 +92,12 @@ $parentWatch = if ($NoParentWatch) {
     Get-PressureParentWatch
 }
 
+$resolvedStopFile = if ([string]::IsNullOrWhiteSpace($StopFile)) {
+    Join-Path $resolvedHistoryDirectory 'parar-gravacao.flag'
+} else {
+    [IO.Path]::GetFullPath($StopFile)
+}
+
 $startedAt = Get-Date
 $endAt = $startedAt.AddMinutes($Minutes)
 $stopReason = 'duracao concluida'
@@ -93,6 +106,7 @@ $samples = 0
 if (-not $Quiet) {
     Write-Host "Gravando pressao ate $($endAt.ToString('dd/MM HH:mm')) em $resolvedHistoryDirectory"
     Write-Host 'Contem dados desta maquina; nao versione. Use Ctrl+C para parar.'
+    Write-Host "Parada sem encerrar processo: crie o arquivo $resolvedStopFile"
     if ($parentWatch.Enabled) {
         Write-Host "Encerra sozinho se $($parentWatch.ParentName) PID $($parentWatch.ParentId) desaparecer."
     }
@@ -108,6 +122,16 @@ try {
         if (-not (Test-PressureParentAlive -Watch $parentWatch)) {
             $stopReason = "processo pai $($parentWatch.ParentName) PID $($parentWatch.ParentId) desapareceu"
             break
+        }
+
+        # Exige arquivo mais novo que o inicio: um sinalizador esquecido de uma
+        # gravacao anterior nao pode impedir a proxima de rodar.
+        if (Test-Path -LiteralPath $resolvedStopFile -PathType Leaf) {
+            $sinalizadoEm = (Get-Item -LiteralPath $resolvedStopFile).LastWriteTime
+            if ($sinalizadoEm -ge $startedAt) {
+                $stopReason = 'parada solicitada por arquivo sinalizador'
+                break
+            }
         }
 
         $cycleStartedAt = Get-Date
@@ -162,6 +186,7 @@ try {
     LinesWritten = [int]$writer.WrittenLines
     Directory = $resolvedHistoryDirectory
     File = (Get-PressureHistoryFilePath -Writer $writer)
+    StopFile = $resolvedStopFile
     StartedAt = $startedAt.ToString('o')
     EndedAt = (Get-Date).ToString('o')
     PendingCleanup = @($writer.PendingCleanup | ForEach-Object { $_.Name })

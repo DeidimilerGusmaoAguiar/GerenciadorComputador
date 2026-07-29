@@ -134,6 +134,19 @@ Ele usa a mesma cadência adaptativa, o mesmo formato de histórico e a mesma
 vigília do processo pai. Termina por duração, por `Ctrl+C` ou quando quem o
 iniciou desaparece. Não encerra nenhum processo.
 
+Uma gravação longa iniciada em segundo plano não tem terminal para receber
+`Ctrl+C`, e encerrá-la exigiria `Stop-Process` — que este repositório só admite
+com autorização nominal. Para isso existe o sinalizador de parada: basta criar
+o arquivo indicado e o gravador sai sozinho no ciclo seguinte, gravando o
+motivo no histórico.
+
+```powershell
+New-Item -ItemType File .\reports\pressure-record\parar-gravacao.flag
+```
+
+O sinalizador só vale se for mais novo que o início da gravação, para um
+arquivo esquecido de uma sessão anterior não impedir a próxima de rodar.
+
 Quem apaga é um script separado, com dry-run por padrão:
 
 ```powershell
