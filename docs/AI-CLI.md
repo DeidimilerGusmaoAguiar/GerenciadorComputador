@@ -62,6 +62,54 @@ contexto ou abra uma sessão nova.
 - Não configure modelo padrão, provedor, credencial ou modo irrestrito no
   repositório. Essas escolhas pertencem ao usuário ou à política da organização.
 
+## Perfis isolados da mesma CLI
+
+Um computador pode manter várias contas da mesma ferramenta — pessoal,
+corporativa, um escopo dedicado a um repositório. A separação é feita por
+diretório de estado, apontado por variável de ambiente:
+
+| CLI | Variável | Diretório padrão |
+|---|---|---|
+| Claude Code | `CLAUDE_CONFIG_DIR` | `%USERPROFILE%\.claude` |
+| Codex CLI | `CODEX_HOME` | `%USERPROFILE%\.codex` |
+
+O atalho que troca de perfil pertence ao perfil do shell de cada pessoa, não ao
+repositório. Um exemplo mínimo, com nome sintético:
+
+```powershell
+function cli-perfil-b {
+    $anterior = $env:CLAUDE_CONFIG_DIR
+    try {
+        $env:CLAUDE_CONFIG_DIR = "$env:USERPROFILE\.claude-perfil-b"
+        claude @args
+    } finally {
+        $env:CLAUDE_CONFIG_DIR = $anterior
+    }
+}
+```
+
+Restaurar o valor anterior no `finally` evita que a sessão do terminal continue
+apontando para o perfil trocado depois que a CLI sai.
+
+Duas consequências importam para o diagnóstico deste projeto:
+
+- Cada perfil é um diretório de estado independente, e alguns passam de
+  centenas de MB. Eles entram nos inventários de espaço, mas nunca são
+  candidatos a limpeza automática.
+- Para o antimalware, cada diretório é um alvo distinto. Excluir `.claude` não
+  cobre `.claude-perfil-b`: irmão com prefixo comum não é caminho contido. Por
+  isso `Get-PressureCliHomeCoverage` avalia um diretório por vez, em lugar de
+  casar por substring, e cada perfil precisa da própria entrada em
+  `ExclusionPath`. Perfis vazios também precisam, sob pena de a varredura
+  encontrá-los já cheios no primeiro uso.
+
+Perfis criados por lançadores fora do shell — um `.cmd` que monta a variável,
+por exemplo — não aparecem em nenhuma lista de aliases. Prefira descobrir os
+diretórios por convenção de nome ao montar um inventário.
+
+O mapa de uma máquina específica é dado local: mantenha-o em `local\`, nunca
+versionado.
+
 ## Adicionando outra CLI
 
 1. Prefira suporte nativo a `AGENTS.md`.
