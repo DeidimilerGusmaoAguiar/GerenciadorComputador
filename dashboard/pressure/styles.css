@@ -1789,6 +1789,71 @@ tbody tr.selected {
   margin-top: 20px;
 }
 
+.exclusion-panel {
+  padding: 28px;
+}
+
+.exclusion-schedule {
+  margin: 14px 0 0;
+  color: #bad0c8;
+  font-size: 13px;
+}
+
+.exclusion-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.exclusion-item {
+  display: grid;
+  gap: 3px;
+  padding: 13px 14px;
+  border: 1px solid color-mix(in srgb, var(--level-color) 26%, var(--line));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--level-color) 6%, rgba(6, 18, 15, 0.56));
+}
+
+.exclusion-item-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.exclusion-item-head strong {
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.exclusion-item-head span {
+  color: var(--level-color);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.exclusion-item small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.exclusion-item .exclusion-source {
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.exclusion-footnote {
+  margin: 16px 0 0;
+  color: var(--subtle);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
 .capability {
   padding: 14px;
   border: 1px solid var(--line);

@@ -449,6 +449,19 @@ foreach ($areaUiMarker in @(
         -Condition $htmlContent.Contains($areaUiMarker) `
         -Message "HTML deve dividir a tela em areas com faixa viva: $areaUiMarker"
 }
+foreach ($exclusionUiMarker in @(
+    'exclusion-grid',
+    'exclusion-schedule',
+    'Quem fica exposto à varredura',
+    'exclusion-count'
+)) {
+    Assert-PressureCondition `
+        -Condition $htmlContent.Contains($exclusionUiMarker) `
+        -Message "HTML deve mostrar a exposicao dos perfis de CLI: $exclusionUiMarker"
+}
+Assert-PressureCondition `
+    -Condition $javaScriptContent.Contains('renderExclusions') `
+    -Message 'JavaScript deve renderizar a exposicao dos perfis de CLI'
 foreach ($areaScriptMarker in @(
     'activateArea',
     'areaOrder',
@@ -878,6 +891,66 @@ foreach ($caso in $contencao) {
     Assert-PressureCondition `
         -Condition ($r.Covered -eq $caso.Esperado) `
         -Message ('Cobertura de exclusao: ' + $caso.Caso)
+}
+
+# --- raizes de descoberta dos perfis de CLI ---
+# Perfil guardado fora do diretorio do usuario nao aparece na descoberta por
+# convencao, e a exposicao sai subcontada. O mapa local existe para corrigir isso.
+$mapaRoot = Join-Path ([IO.Path]::GetTempPath()) ("pressure-map-test-" + [Guid]::NewGuid().ToString('n'))
+try {
+    $null = New-Item -ItemType Directory -Path $mapaRoot
+    $mapaPath = Join-Path $mapaRoot 'perfis-cli.json'
+    @{
+        version = 1
+        profiles = @(
+            @{ cli = 'claude'; alias = 'cc-a'; label = 'A'; color = 'Cyan'; home = 'D:\perfis\ana\.claude' }
+            @{ cli = 'claude'; alias = 'cc-b'; label = 'B'; color = 'Green'; home = 'D:\repos\.claude-ce' }
+        )
+        ignore = @('D:\outro\.gemini')
+    } |
+        ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath $mapaPath -Encoding utf8
+
+    $raizesDoMapa = @(Get-PressureCliHomeRoots -ProfileMapPath $mapaPath)
+    foreach ($esperada in @('D:\perfis\ana', 'D:\repos', 'D:\outro')) {
+        Assert-PressureCondition `
+            -Condition ($raizesDoMapa -contains $esperada) `
+            -Message "Raiz declarada no mapa deve entrar na descoberta: $esperada"
+    }
+    Assert-PressureCondition `
+        -Condition ($raizesDoMapa -contains ([IO.Path]::GetFullPath($env:USERPROFILE))) `
+        -Message 'Raiz do usuario deve continuar valendo junto com o mapa'
+
+    # Raiz explicita e decisao de quem chamou: o mapa nao pode acrescentar nada.
+    $raizesExplicitas = @(
+        Get-PressureCliHomeRoots -ExplicitRoot @('D:\somente') -ProfileMapPath $mapaPath
+    )
+    Assert-PressureCondition `
+        -Condition (@($raizesExplicitas).Count -eq 1 -and $raizesExplicitas[0] -eq 'D:\somente') `
+        -Message 'Raiz explicita deve vencer o mapa'
+
+    # Mapa corrompido nao pode derrubar a coleta.
+    $mapaQuebrado = Join-Path $mapaRoot 'quebrado.json'
+    'isto nao e json' | Set-Content -LiteralPath $mapaQuebrado -Encoding utf8
+    $raizesQuebradas = @(
+        Get-PressureCliHomeRoots -ProfileMapPath $mapaQuebrado -WarningAction SilentlyContinue
+    )
+    Assert-PressureCondition `
+        -Condition ($raizesQuebradas -contains ([IO.Path]::GetFullPath($env:USERPROFILE))) `
+        -Message 'Mapa ilegivel deve degradar para a raiz do usuario'
+
+    $raizesSemMapa = @(
+        Get-PressureCliHomeRoots -ProfileMapPath (Join-Path $mapaRoot 'ausente.json')
+    )
+    Assert-PressureCondition `
+        -Condition (@($raizesSemMapa).Count -ge 1) `
+        -Message 'Mapa ausente nao e erro: a raiz do usuario continua valendo'
+} finally {
+    # Limpeza do proprio temp por API do .NET: Remove-Item solto num teste
+    # exigiria o gate de execucao que a superficie publica cobra dos scripts.
+    if (Test-Path -LiteralPath $mapaRoot) {
+        [IO.Directory]::Delete($mapaRoot, $true)
+    }
 }
 
 # --- cobertura por perfil de CLI ---

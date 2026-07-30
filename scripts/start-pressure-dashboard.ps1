@@ -49,6 +49,13 @@ param(
     [ValidateRange(2, 600)]
     [int]$MaxRefreshSeconds = 30,
 
+    # Raizes onde procurar diretorio de estado de CLI. Vazio usa o diretorio do
+    # usuario mais o que o mapa local de perfis declarar.
+    [string[]]$CliHomeRoot = @(),
+
+    [AllowEmptyString()]
+    [string]$CliProfileMapPath = '',
+
     [switch]$FixedCadence
 )
 
@@ -121,6 +128,12 @@ if ($Background) {
     if (-not [string]::IsNullOrWhiteSpace($HistoryDirectory)) {
         $childArguments += @('-HistoryDirectory', "`"$HistoryDirectory`"")
     }
+    foreach ($root in @($CliHomeRoot | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        $childArguments += @('-CliHomeRoot', "`"$root`"")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($CliProfileMapPath)) {
+        $childArguments += @('-CliProfileMapPath', "`"$CliProfileMapPath`"")
+    }
     # O filho é destacado de propósito: este processo termina logo abaixo, então
     # vigiar o pai derrubaria o painel em segundos. A ociosidade continua valendo.
     $childArguments += @(
@@ -150,6 +163,8 @@ $state = New-PressureMonitorState `
     -RefreshSeconds $RefreshSeconds `
     -MaxRefreshSeconds $MaxRefreshSeconds `
     -FixedCadence:$FixedCadence `
+    -CliHomeRoots $CliHomeRoot `
+    -CliProfileMapPath $CliProfileMapPath `
     -ProcessTerminationEnabled:$EnableProcessTermination `
     -DashboardProcessId ([uint32]$PID)
 if ($SnapshotOnly) {

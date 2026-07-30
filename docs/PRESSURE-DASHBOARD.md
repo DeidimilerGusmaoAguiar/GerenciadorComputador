@@ -228,7 +228,7 @@ permanece fixo e reúne três coisas que valem em qualquer área:
 | Visão geral | `#visao` | Dial de pressão, resumo textual e os cinco cartões de recurso com sparkline |
 | CLIs e sessões | `#clis` | Árvore do Windows Terminal, cartões de sessão e o diálogo de encerramento |
 | Processos | `#processos` | Tabela por PID, ordenação por métrica e detalhe do processo selecionado |
-| Diagnóstico | `#diagnostico` | Sinais interpretados, contexto da amostra, volumes e limites de cobertura |
+| Diagnóstico | `#diagnostico` | Sinais interpretados, contexto da amostra, volumes, exposição dos perfis de CLI ao antimalware e limites de cobertura |
 
 Somente a área ativa fica visível; a faixa viva continua atualizada em todas
 elas, de modo que trocar de área não custa o acompanhamento de relance. As abas
@@ -245,7 +245,31 @@ Navegação:
 
 Os arquivos do front-end são lidos do disco a cada requisição, então editar
 `dashboard\pressure\*` e recarregar a página basta — não é preciso reiniciar o
-servidor.
+servidor. Mudança no coletor é diferente: `pressure-core.ps1` é carregado na
+memória quando o processo sobe, então só vale em instância nova.
+
+### Perfis de CLI expostos ao antimalware
+
+A área Diagnóstico tem lugar fixo para isso, e não apenas quando o disco já está
+sofrendo: quem precisa dessa informação precisa dela antes da varredura. O painel
+mostra, por perfil, se ele está coberto por `ExclusionPath` ou `ExclusionProcess`,
+junto da próxima varredura completa agendada e da política de ociosidade.
+
+Só o rótulo do diretório é enviado ao navegador. O caminho completo revelaria o
+perfil do usuário, e fica no relatório local de
+`scripts\report-exclusion-coverage.ps1`, que é quem serve para anexar a um chamado.
+
+Onde o painel procura esses diretórios:
+
+- `-CliHomeRoot` define as raízes explicitamente e vence qualquer padrão;
+- sem ele, valem o diretório do usuário e os diretórios pais declarados em
+  `local\perfis-cli.json`, quando esse mapa existir;
+- `-CliProfileMapPath` aponta outro mapa.
+
+Isso importa porque perfil guardado fora do diretório do usuário — dentro de uma
+pasta de repositórios, por exemplo — não aparece na descoberta por convenção. Sem
+o mapa, o painel contaria menos perfis expostos do que a máquina realmente tem, e
+o número menor pareceria uma boa notícia.
 
 ## Fontes das métricas
 

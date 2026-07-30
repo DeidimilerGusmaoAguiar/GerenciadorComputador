@@ -196,7 +196,8 @@ foreach ($requiredPressureMarker in @(
     'Get-PressureNextScheduledScan',
     'Get-PressureAdaptiveRefreshSeconds',
     'Test-PressureExclusionCoverage',
-    'Get-PressureCliHomeCandidates'
+    'Get-PressureCliHomeCandidates',
+    'Get-PressureCliHomeRoots'
 )) {
     Assert-PublicCondition `
         -Condition $pressureCoreContent.Contains($requiredPressureMarker) `

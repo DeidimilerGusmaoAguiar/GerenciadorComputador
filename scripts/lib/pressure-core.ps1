@@ -555,6 +555,12 @@ function New-PressureMonitorState {
 
         [string[]]$CliHomeRoots = @(),
 
+        # Mapa declarado dos perfis de CLI. Perfil fora do diretorio do usuario
+        # nao apareceria na descoberta por convencao, e a exposicao seria
+        # subcontada sem aviso. Vazio mantem apenas a raiz do usuario.
+        [AllowEmptyString()]
+        [string]$CliProfileMapPath = '',
+
         [switch]$ProcessTerminationEnabled,
 
         [uint32]$DashboardProcessId = [uint32]$PID
@@ -605,7 +611,9 @@ function New-PressureMonitorState {
         DefenderStatus = $null
         DefenderPreference = $null
         CliHomeRoots = @(
-            if (@($CliHomeRoots).Count -gt 0) { $CliHomeRoots } else { @($env:USERPROFILE) }
+            Get-PressureCliHomeRoots `
+                -ExplicitRoot $CliHomeRoots `
+                -ProfileMapPath $CliProfileMapPath
         )
         CliHomes = @()
         Capabilities = [ordered]@{
@@ -1498,13 +1506,20 @@ function Get-PressureInsights {
             })
         }
 
-        if ([int]$Defender.ExposedCliHomeCount -gt 0 -and $diskUnderPressure) {
+        # Sem pressão de disco no momento a exposição continua valendo: quem
+        # precisa saber disso precisa saber antes da varredura, não durante.
+        if ([int]$Defender.ExposedCliHomeCount -gt 0) {
             $exposed = @($Defender.CliHomes | Where-Object { -not $_.Covered })
             $total = @($Defender.CliHomes).Count
             $rotulos = (@($exposed | Select-Object -First 6 | ForEach-Object { $_.Label }) -join ', ')
+            $scanSoon = (
+                $null -ne $Defender.MinutesUntilNextScan -and
+                $Defender.MinutesUntilNextScan -ge 0 -and
+                $Defender.MinutesUntilNextScan -le 120
+            )
             $insights.Add([pscustomobject]@{
                 Resource = 'disk'
-                Level = 1
+                Level = if ($diskUnderPressure -or $Defender.ScanInProgress -or $scanSoon) { 2 } else { 1 }
                 Title = "$($exposed.Count) de $total perfis de CLI fora das exclusões"
                 Narrative = "Perfis expostos: $rotulos. Cada perfil mantém diretório próprio de estado, e a exclusão de um não cobre os outros."
                 Evidence = 'Contenção real de caminho contra ExclusionPath, mais exclusão do binário em ExclusionProcess; nomes de pasta não revelam o caminho completo.'
@@ -2453,6 +2468,74 @@ function Test-PressureExclusionCoverage {
     }
 
     return [pscustomobject]@{ Covered = $false; MatchedBy = '' }
+}
+
+function Get-PressureCliHomeRoots {
+    <#
+    .SYNOPSIS
+    Resolve as raízes onde procurar diretórios de estado das CLIs.
+
+    .DESCRIPTION
+    Raiz explícita vence. Sem ela, o diretório do usuário é o padrão, somado aos
+    diretórios pais declarados no mapa local de perfis.
+
+    Perfil mantido fora do diretório do usuário — dentro de uma pasta de
+    repositórios, por exemplo — não aparece na descoberta por convenção, e a
+    contagem de exposição sai menor que a realidade sem nenhum aviso.
+
+    O mapa nomeia usuário e sistemas internos, então vive fora do versionamento.
+    A ausência dele não é erro: o padrão continua valendo.
+    #>
+    [CmdletBinding()]
+    param(
+        [string[]]$ExplicitRoot = @(),
+
+        [AllowEmptyString()]
+        [string]$ProfileMapPath = ''
+    )
+
+    $explicit = @(
+        $ExplicitRoot | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    )
+    if ($explicit.Count -gt 0) {
+        return @($explicit | ForEach-Object { [IO.Path]::GetFullPath($_) } | Sort-Object -Unique)
+    }
+
+    $roots = [Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $roots.Add([IO.Path]::GetFullPath($env:USERPROFILE))
+    }
+
+    $resolvedMapPath = if ([string]::IsNullOrWhiteSpace($ProfileMapPath)) {
+        [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\local\perfis-cli.json'))
+    } else {
+        [IO.Path]::GetFullPath($ProfileMapPath)
+    }
+
+    if (Test-Path -LiteralPath $resolvedMapPath -PathType Leaf) {
+        try {
+            $map = Get-Content -LiteralPath $resolvedMapPath -Raw | ConvertFrom-Json
+            $declared = @(
+                @($map.profiles | ForEach-Object { $_.home })
+                if ($map.PSObject.Properties.Name -contains 'ignore') { @($map.ignore) }
+            )
+            foreach ($declaredHome in @(
+                $declared | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )) {
+                $parent = [IO.Path]::GetDirectoryName(
+                    [IO.Path]::GetFullPath([string]$declaredHome)
+                )
+                if (-not [string]::IsNullOrWhiteSpace($parent)) {
+                    $roots.Add($parent)
+                }
+            }
+        } catch {
+            # Mapa ilegível não pode derrubar a coleta: o painel volta ao padrão.
+            Write-Warning "Mapa de perfis ilegivel, seguindo com a raiz do usuario: $resolvedMapPath"
+        }
+    }
+
+    return @($roots | Sort-Object -Unique)
 }
 
 function Get-PressureCliHomeCandidates {

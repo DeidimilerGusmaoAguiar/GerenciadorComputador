@@ -645,6 +645,63 @@
       .join("");
   }
 
+  function renderExclusions(snapshot) {
+    const defender = snapshot.Defender || {};
+    const homes = defender.CliHomes || [];
+    const grid = byId("exclusion-grid");
+
+    // Aba carregada antes deste painel existir continua funcionando: sem o
+    // contêiner, esta seção apenas não é desenhada.
+    if (!grid) {
+      return;
+    }
+
+    if (defender.Available !== true) {
+      byId("exclusion-count").textContent = "sem leitura";
+      byId("exclusion-schedule").textContent =
+        "O provedor do antimalware não respondeu nesta amostra.";
+      grid.innerHTML = "";
+      return;
+    }
+
+    const exposed = homes.filter((home) => home.Covered !== true);
+    byId("exclusion-count").textContent = homes.length
+      ? `${exposed.length} de ${homes.length} expostos`
+      : "nenhum perfil encontrado";
+
+    const scanNote = defender.ScanInProgress
+      ? "Varredura completa em andamento agora."
+      : defender.NextScheduledScan
+        ? `Próxima varredura completa: ${escapeHtml(defender.NextScheduledScan)}` +
+          (defender.MinutesUntilNextScan >= 0
+            ? ` (em ${formatAge(defender.MinutesUntilNextScan)})`
+            : "")
+        : "Sem agenda de varredura completa legível.";
+    const idleNote = defender.ScanOnlyIfIdle
+      ? "A política espera a máquina ficar ociosa."
+      : "A política não espera a máquina ficar ociosa.";
+    byId("exclusion-schedule").textContent = `${scanNote} ${idleNote}`;
+
+    grid.innerHTML = homes
+      .map(
+        (home) => `
+          <article class="exclusion-item" data-level="${home.Covered === true ? 0 : 3}">
+            <div class="exclusion-item-head">
+              <strong>${escapeHtml(home.Label)}</strong>
+              <span>${home.Covered === true ? "coberto" : "exposto"}</span>
+            </div>
+            <small>${
+              home.Covered === true
+                ? `por ${escapeHtml(home.CoveredBy || "exclusão declarada")}`
+                : "sem exclusão de caminho nem de processo"
+            }</small>
+            <small class="exclusion-source">origem: ${escapeHtml(home.Source)}</small>
+          </article>
+        `
+      )
+      .join("");
+  }
+
   function renderCapabilities(snapshot) {
     byId("capability-grid").innerHTML = (snapshot.Capabilities || [])
       .map(
@@ -976,6 +1033,7 @@
     renderCliPressure(snapshot);
     renderInsights(snapshot);
     renderSampleContext(snapshot);
+    renderExclusions(snapshot);
     renderCapabilities(snapshot);
     renderConsumers();
   }

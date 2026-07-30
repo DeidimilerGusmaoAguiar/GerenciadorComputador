@@ -42,6 +42,11 @@ param(
     [AllowEmptyString()]
     [string]$HistoryDirectory = '',
 
+    [string[]]$CliHomeRoot = @(),
+
+    [AllowEmptyString()]
+    [string]$CliProfileMapPath = '',
+
     [switch]$NoParentWatch,
 
     # Interruptor de parada sem encerrar processo. Um arquivo criado neste
@@ -73,6 +78,8 @@ $state = New-PressureMonitorState `
     -RefreshSeconds $RefreshSeconds `
     -MaxRefreshSeconds $MaxRefreshSeconds `
     -FixedCadence:$FixedCadence `
+    -CliHomeRoots $CliHomeRoot `
+    -CliProfileMapPath $CliProfileMapPath `
     -DashboardProcessId ([uint32]$PID)
 
 $writer = New-PressureHistoryWriter `
