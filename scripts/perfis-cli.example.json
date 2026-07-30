@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "generatedBy": "scripts\\sync-cli-profiles.ps1 -Bootstrap",
+  "note": "Exemplo sintetico versionado. O mapa real desta maquina fica em local\\perfis-cli.json, que o Git ignora.",
+  "profiles": [
+    {
+      "cli": "claude",
+      "slug": "padrao",
+      "alias": "cc-padrao",
+      "label": "PADRAO",
+      "color": "Cyan",
+      "home": "D:\\perfis\\ana\\.claude"
+    },
+    {
+      "cli": "claude",
+      "slug": "estudo",
+      "alias": "cc-estudo",
+      "label": "ESTUDO",
+      "color": "Yellow",
+      "home": "D:\\perfis\\ana\\.claude-estudo"
+    },
+    {
+      "cli": "codex",
+      "slug": "padrao",
+      "alias": "cc-padrao-codex",
+      "label": "PADRAO",
+      "color": "Green",
+      "home": "D:\\perfis\\ana\\.codex"
+    },
+    {
+      "cli": "codex",
+      "slug": "estudo",
+      "alias": "cc-estudo-codex",
+      "label": "ESTUDO",
+      "color": "Magenta",
+      "home": "D:\\perfis\\ana\\.codex-estudo"
+    }
+  ]
+}

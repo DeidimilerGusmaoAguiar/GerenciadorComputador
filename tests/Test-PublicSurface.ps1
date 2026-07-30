@@ -40,6 +40,8 @@ $requiredPaths = @(
     'docs\PRESSURE-DASHBOARD.md',
     '.claude\settings.json',
     'scripts\collect-memory.ps1',
+    'scripts\sync-cli-profiles.ps1',
+    'scripts\perfis-cli.example.json',
     'scripts\lib\pressure-core.ps1',
     'scripts\start-pressure-dashboard.ps1',
     'scripts\stop-pressure-cli-session.ps1',
@@ -227,6 +229,52 @@ foreach ($requiredGuideMarker in @(
     Assert-PublicCondition `
         -Condition $pressureGuideContent.Contains($requiredGuideMarker) `
         -Message "docs/PRESSURE-DASHBOARD.md nao explica: $requiredGuideMarker"
+}
+
+$syncProfilesContent = [IO.File]::ReadAllText(
+    (Join-Path $repoRoot 'scripts\sync-cli-profiles.ps1')
+)
+foreach ($requiredSyncMarker in @(
+    '# >>> perfis-cli inicio',
+    '# <<< perfis-cli fim',
+    'Text.Encoding]::ASCII',
+    'Get-AliasConflict',
+    'ConvertTo-GeneratedPath',
+    'Test-ProfileMap',
+    'ReparsePoint',
+    # Sem isto o perfil do PowerShell 7 fica com a variavel vazia em lugar de
+    # remove-la, e a proxima invocacao herda um diretorio de estado errado.
+    'NullString]::Value'
+)) {
+    Assert-PublicCondition `
+        -Condition $syncProfilesContent.Contains($requiredSyncMarker) `
+        -Message "Sincronizador de perfis nao contem: $requiredSyncMarker"
+}
+Assert-PublicCondition `
+    -Condition (-not ($syncProfilesContent -match '(?m)^\s*\$MapPath\s*=\s*[''"]\w:')) `
+    -Message 'Sincronizador de perfis nao pode ter caminho absoluto embutido'
+
+$exampleMapContent = [IO.File]::ReadAllText(
+    (Join-Path $repoRoot 'scripts\perfis-cli.example.json')
+)
+$exampleMap = $null
+$exampleMapValid = $true
+try {
+    $exampleMap = $exampleMapContent | ConvertFrom-Json
+} catch {
+    $exampleMapValid = $false
+}
+Assert-PublicCondition `
+    -Condition $exampleMapValid `
+    -Message 'scripts/perfis-cli.example.json nao e JSON valido'
+if ($exampleMapValid) {
+    Assert-PublicCondition `
+        -Condition (@($exampleMap.profiles).Count -gt 0) `
+        -Message 'Exemplo de mapa de perfis esta vazio'
+    # O exemplo e publico: nenhum caminho de conta real pode vazar nele.
+    Assert-PublicCondition `
+        -Condition (-not ($exampleMapContent -match '(?i)C:\\\\Users')) `
+        -Message 'Exemplo de mapa de perfis contem caminho de usuario real'
 }
 
 $settingsPath = Join-Path $repoRoot '.claude\settings.json'

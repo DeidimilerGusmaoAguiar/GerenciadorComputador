@@ -110,6 +110,45 @@ diretórios por convenção de nome ao montar um inventário.
 O mapa de uma máquina específica é dado local: mantenha-o em `local\`, nunca
 versionado.
 
+### Mantendo os hosts sincronizados
+
+Windows PowerShell 5.1 e PowerShell 7 leem arquivos de perfil diferentes
+(`Documents\WindowsPowerShell\` e `Documents\PowerShell\`). Editar os dois à mão
+faz um deles ficar para trás sem aviso — e quem descobre é você, ao abrir a aba
+errada e não achar o atalho.
+
+`scripts\sync-cli-profiles.ps1` trata um mapa como fonte única e escreve uma
+região delimitada por marcadores em cada perfil de host:
+
+```powershell
+# maquina nova: descobre os perfis por convencao e propoe o mapa
+pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1 -Bootstrap -SearchRoot C:\Repos
+
+# revise rotulo, cor e alias no mapa, depois:
+pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1              # dry-run
+pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1 -Execute     # aplica
+```
+
+Garantias que o script mantém:
+
+- dry-run é o padrão; `-Execute` faz backup datado antes de escrever, e recusa o
+  resultado se o perfil gerado não passar no parser;
+- só a região entre os marcadores é reescrita. Função escrita à mão continua
+  onde está, e alias duplicado fora da região é apenas relatado — a decisão de
+  remover é sua;
+- a saída é ASCII puro, porque perfil sem BOM é lido como ANSI pelo 5.1;
+- o alvo é sempre um perfil de host descoberto em runtime, nunca um caminho
+  arbitrário;
+- `-BlockOutPath` grava só o bloco gerado num arquivo à parte, para revisar ou
+  testar antes de encostar em qualquer perfil.
+
+Perfil novo é uma linha no mapa e uma nova execução. Para o antimalware nada
+precisa ser declarado duas vezes: `scripts\report-exclusion-coverage.ps1`
+descobre os diretórios pela mesma convenção de nome, então um perfil recém-criado
+já aparece no relatório de cobertura como exposto.
+
+`scripts\perfis-cli.example.json` mostra o formato do mapa com dados sintéticos.
+
 ## Adicionando outra CLI
 
 1. Prefira suporte nativo a `AGENTS.md`.
