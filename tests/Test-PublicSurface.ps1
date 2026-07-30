@@ -239,6 +239,7 @@ foreach ($requiredSyncMarker in @(
     '# <<< perfis-cli fim',
     'Text.Encoding]::ASCII',
     'Get-AliasConflict',
+    'Get-MapDrift',
     'ConvertTo-GeneratedPath',
     'Test-ProfileMap',
     'ReparsePoint',

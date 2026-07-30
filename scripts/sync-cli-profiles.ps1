@@ -34,6 +34,10 @@ param(
 
     [switch]$Bootstrap,
 
+    # Compara o mapa com o que existe no disco e relata diferenca, sem gerar
+    # nada. Descoberta avisa; decidir continua sendo do usuario.
+    [switch]$Report,
+
     [string[]]$SearchRoot = @(),
 
     [switch]$Force,
@@ -221,6 +225,67 @@ function Test-ProfileMap {
         if (-not $seen.Add([string]$entry.alias)) {
             throw "Alias repetido no mapa: $($entry.alias)"
         }
+    }
+}
+
+function Get-MapDrift {
+    <#
+    .SYNOPSIS
+    Compara o mapa com os diretorios de estado existentes no disco.
+
+    .DESCRIPTION
+    Perfil novo aparece como diretorio antes de virar atalho. Este relatorio
+    aponta o que o mapa ainda nao menciona e o que o mapa menciona sem existir,
+    sem alterar nada. Diretorio listado em "ignore" nao volta a aparecer: a
+    decisao de nao ter alias tambem e uma decisao registrada.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Map,
+        [string[]]$Root = @()
+    )
+
+    $known = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::OrdinalIgnoreCase
+    )
+    $mapped = @(@($Map.profiles).home | Where-Object { $_ })
+    $ignored = if ($Map.PSObject.Properties.Name -contains 'ignore') {
+        @($Map.ignore | Where-Object { $_ })
+    } else {
+        @()
+    }
+    foreach ($path in @($mapped) + @($ignored)) {
+        $null = $known.Add([IO.Path]::GetFullPath([string]$path))
+    }
+
+    # As raizes saem do proprio mapa: quem ja declarou um perfil em C:\Repos quer
+    # que essa pasta continue sendo observada, sem repetir -SearchRoot.
+    $roots = @(
+        $Root
+        @($mapped) + @($ignored) | ForEach-Object {
+            [IO.Path]::GetDirectoryName([IO.Path]::GetFullPath([string]$_))
+        }
+    ) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { [IO.Path]::GetFullPath($_) } |
+        Sort-Object -Unique
+
+    $discovered = @(New-ProfileMap -Root $roots).profiles
+    $novos = @(
+        $discovered |
+            Where-Object { -not $known.Contains([IO.Path]::GetFullPath([string]$_.home)) }
+    )
+    $ausentes = @(
+        $mapped |
+            Where-Object { -not (Test-Path -LiteralPath ([string]$_) -PathType Container) }
+    )
+
+    return [pscustomobject]@{
+        Roots = @($roots)
+        Mapped = @($mapped).Count
+        Ignored = @($ignored).Count
+        Novos = $novos
+        Ausentes = @($ausentes)
     }
 }
 
@@ -504,6 +569,44 @@ if (-not (Test-Path -LiteralPath $resolvedMapPath -PathType Leaf)) {
 
 $map = Get-Content -LiteralPath $resolvedMapPath -Raw | ConvertFrom-Json
 Test-ProfileMap -Map $map
+
+if ($Report) {
+    $drift = Get-MapDrift -Map $map -Root $SearchRoot
+    Write-Host "Mapa: $resolvedMapPath"
+    Write-Host "  perfis declarados: $($drift.Mapped)   ignorados de proposito: $($drift.Ignored)"
+    Write-Host "  raizes observadas: $(@($drift.Roots) -join ', ')"
+    Write-Host ''
+
+    if (@($drift.Novos).Count -eq 0) {
+        Write-Host 'Nenhum diretorio de estado fora do mapa.'
+    } else {
+        Write-Host "Diretorios sem decisao no mapa: $(@($drift.Novos).Count)"
+        foreach ($novo in @($drift.Novos)) {
+            Write-Host ("  {0,-24} {1}" -f $novo.alias, $novo.home)
+        }
+        Write-Host ''
+        Write-Host 'Acrescente em "profiles" para virar atalho, ou em "ignore" para calar o aviso.'
+    }
+
+    if (@($drift.Ausentes).Count -gt 0) {
+        Write-Host ''
+        Write-Warning (
+            'Perfis declarados que nao existem no disco: ' +
+            (@($drift.Ausentes) -join ', ')
+        )
+    }
+
+    return [pscustomobject]@{
+        Mode = 'report'
+        MapPath = $resolvedMapPath
+        Mapped = $drift.Mapped
+        Ignored = $drift.Ignored
+        # ForEach-Object em lugar de acesso direto: com a lista vazia, o
+        # StrictMode reclamaria da propriedade ausente.
+        Novos = @(@($drift.Novos) | ForEach-Object { $_.home })
+        Ausentes = @($drift.Ausentes)
+    }
+}
 
 $aliasNames = @(@($map.profiles).alias)
 $blockLines = New-ManagedBlock -Map $map

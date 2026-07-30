@@ -149,6 +149,38 @@ já aparece no relatório de cobertura como exposto.
 
 `scripts\perfis-cli.example.json` mostra o formato do mapa com dados sintéticos.
 
+### Por que um mapa, e não leitura direta
+
+A descoberta por convenção acha o diretório de estado, e é assim que
+`-Bootstrap` funciona. Ela não consegue derivar três coisas:
+
+- **o nome do atalho** — `.claude-perfil-b` daria `cc-perfil-b`, mas quem usa pode
+  querer `cc-b`, e um rótulo curto para exibir no prompt não está escrito em lugar
+  nenhum no nome da pasta;
+- **a intenção** — parte dos diretórios não deve virar atalho. Perfil acionado
+  por um `.cmd`, escopo abandonado e diretório de outra ferramenta continuam
+  existindo no disco;
+- **a estabilidade** — se o conjunto fosse recalculado a cada execução, seu
+  perfil mudaria sozinho quando um diretório aparecesse, e um atalho
+  desapareceria quando um repositório não estivesse clonado.
+
+Ler o próprio perfil do shell também não serve como fonte: são dois arquivos que
+podem discordar, e é justamente essa discordância que se quer eliminar. Qual dos
+dois seria a verdade?
+
+Então a divisão é: descoberta avisa, mapa decide. `-Report` compara o mapa com o
+disco e lista o que ainda não tem decisão, sem gerar nada:
+
+```powershell
+pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1 -Report
+```
+
+As raízes observadas saem do próprio mapa — quem declarou um perfil numa pasta
+quer que ela continue sob observação. Um diretório novo aparece como pendência
+com o alias que ele *teria*; entra em `profiles` para virar atalho, ou em
+`ignore` para registrar que a ausência de atalho é deliberada. O relatório também
+avisa quando um perfil declarado deixou de existir no disco.
+
 ## Adicionando outra CLI
 
 1. Prefira suporte nativo a `AGENTS.md`.
