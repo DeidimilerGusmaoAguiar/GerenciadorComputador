@@ -12,309 +12,384 @@
   <div class="ambient ambient-one" aria-hidden="true"></div>
   <div class="ambient ambient-two" aria-hidden="true"></div>
 
-  <header class="topbar">
-    <a class="brand" href="/" aria-label="Pulso, início">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 36 36" role="img">
-          <path d="M4 19h6l3-9 5 17 4-12 3 4h7"></path>
-        </svg>
-      </span>
-      <span>
-        <strong>Pulso</strong>
-        <small>observabilidade local</small>
-      </span>
-    </a>
+  <div class="sticky-shell">
+    <header class="topbar">
+      <a class="brand" href="#visao" aria-label="Pulso, início">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 36 36" role="img">
+            <path d="M4 19h6l3-9 5 17 4-12 3 4h7"></path>
+          </svg>
+        </span>
+        <span>
+          <strong>Pulso</strong>
+          <small>observabilidade local</small>
+        </span>
+      </a>
 
-    <div class="live-state" id="live-state" role="status" aria-live="polite">
-      <span class="live-dot"></span>
-      <span id="live-label">Conectando</span>
-      <span class="live-divider" aria-hidden="true"></span>
-      <time id="last-update">—</time>
+      <div class="live-state" id="live-state" role="status" aria-live="polite">
+        <span class="live-dot"></span>
+        <span id="live-label">Conectando</span>
+        <span class="live-divider" aria-hidden="true"></span>
+        <time id="last-update">—</time>
+      </div>
+    </header>
+
+    <!-- Faixa viva: continua visível em qualquer área, para não perder o
+         monitoramento de relance ao trocar de módulo. -->
+    <div class="pulse-strip" id="pulse-strip" aria-label="Leitura resumida do sistema">
+      <div class="strip-score" id="strip-score-shell" data-level="0">
+        <strong id="strip-score">0</strong>
+        <small>pressão</small>
+      </div>
+      <span class="strip-state" id="strip-state" data-level="0">ANALISANDO</span>
+      <ul class="strip-meters">
+        <li class="strip-meter" data-resource="cpu" data-level="0">
+          <span class="strip-meter-label">CPU</span>
+          <span class="strip-meter-value" id="strip-cpu">—</span>
+        </li>
+        <li class="strip-meter" data-resource="memory" data-level="0">
+          <span class="strip-meter-label">RAM</span>
+          <span class="strip-meter-value" id="strip-memory">—</span>
+        </li>
+        <li class="strip-meter" data-resource="disk" data-level="0">
+          <span class="strip-meter-label">Disco</span>
+          <span class="strip-meter-value" id="strip-disk">—</span>
+        </li>
+        <li class="strip-meter" data-resource="gpu" data-level="0">
+          <span class="strip-meter-label">GPU</span>
+          <span class="strip-meter-value" id="strip-gpu">—</span>
+        </li>
+        <li class="strip-meter" data-resource="network" data-level="0">
+          <span class="strip-meter-label">Rede</span>
+          <span class="strip-meter-value" id="strip-network">—</span>
+        </li>
+      </ul>
     </div>
-  </header>
+
+    <nav class="area-nav" id="area-nav" role="tablist" aria-label="Áreas do painel">
+      <button class="area-tab" id="tab-visao" type="button" role="tab"
+              aria-selected="true" aria-controls="area-visao" data-area="visao">
+        <span class="area-tab-label">Visão geral</span>
+        <small>pressão e recursos</small>
+      </button>
+      <button class="area-tab" id="tab-clis" type="button" role="tab" tabindex="-1"
+              aria-selected="false" aria-controls="area-clis" data-area="clis">
+        <span class="area-tab-label">
+          CLIs e sessões
+          <span class="area-tab-badge" id="badge-clis" hidden></span>
+        </span>
+        <small>árvores do Terminal</small>
+      </button>
+      <button class="area-tab" id="tab-processos" type="button" role="tab" tabindex="-1"
+              aria-selected="false" aria-controls="area-processos" data-area="processos">
+        <span class="area-tab-label">Processos</span>
+        <small>atribuição por PID</small>
+      </button>
+      <button class="area-tab" id="tab-diagnostico" type="button" role="tab" tabindex="-1"
+              aria-selected="false" aria-controls="area-diagnostico" data-area="diagnostico">
+        <span class="area-tab-label">
+          Diagnóstico
+          <span class="area-tab-badge" id="badge-diagnostico" hidden></span>
+        </span>
+        <small>sinais, amostra e limites</small>
+      </button>
+    </nav>
+  </div>
 
   <main>
-    <section class="overview-shell" aria-labelledby="overview-title">
-      <div class="overview-copy">
-        <p class="eyebrow">Leitura do sistema agora</p>
-        <div class="headline-row">
-          <h1 id="overview-title">O que está pressionando o computador?</h1>
-          <span class="state-pill" id="overall-state" data-level="0">ANALISANDO</span>
+    <section class="area" id="area-visao" role="tabpanel" aria-labelledby="tab-visao"
+             data-area="visao" tabindex="-1">
+      <section class="overview-shell" aria-labelledby="overview-title">
+        <div class="overview-copy">
+          <p class="eyebrow">Leitura do sistema agora</p>
+          <div class="headline-row">
+            <h1 id="overview-title">O que está pressionando o computador?</h1>
+            <span class="state-pill" id="overall-state" data-level="0">ANALISANDO</span>
+          </div>
+          <p class="overview-summary" id="overall-summary">
+            Preparando a primeira amostra e correlacionando processos.
+          </p>
+          <div class="trust-note">
+            <span class="trust-icon" aria-hidden="true">◎</span>
+            <span>Medição, correlação e inferência aparecem separadas. O painel não inventa causa raiz.</span>
+          </div>
         </div>
-        <p class="overview-summary" id="overall-summary">
-          Preparando a primeira amostra e correlacionando processos.
+
+        <div class="pressure-dial" id="pressure-dial" style="--pressure: 0">
+          <div class="pressure-dial-inner">
+            <span id="overall-score">0</span>
+            <small>pressão</small>
+          </div>
+        </div>
+      </section>
+
+      <section class="resource-grid" aria-label="Recursos do sistema">
+        <article class="resource-card" data-resource="cpu" data-level="0">
+          <div class="resource-heading">
+            <span class="resource-icon resource-icon-cpu" aria-hidden="true">CPU</span>
+            <div>
+              <h2>Processador</h2>
+              <p id="cpu-basis">Capacidade total</p>
+            </div>
+            <span class="resource-state" id="cpu-state">—</span>
+          </div>
+          <div class="resource-reading">
+            <strong id="cpu-value">—</strong><span>%</span>
+          </div>
+          <p class="resource-detail" id="cpu-detail">Coletando uso total…</p>
+          <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
+            <path class="sparkline-fill" id="cpu-spark-fill"></path>
+            <path class="sparkline-line" id="cpu-spark-line"></path>
+          </svg>
+        </article>
+
+        <article class="resource-card" data-resource="memory" data-level="0">
+          <div class="resource-heading">
+            <span class="resource-icon resource-icon-memory" aria-hidden="true">RAM</span>
+            <div>
+              <h2>Memória</h2>
+              <p id="memory-basis">Disponível + commit</p>
+            </div>
+            <span class="resource-state" id="memory-state">—</span>
+          </div>
+          <div class="resource-reading">
+            <strong id="memory-value">—</strong><span>%</span>
+          </div>
+          <p class="resource-detail" id="memory-detail">Coletando memória disponível…</p>
+          <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
+            <path class="sparkline-fill" id="memory-spark-fill"></path>
+            <path class="sparkline-line" id="memory-spark-line"></path>
+          </svg>
+        </article>
+
+        <article class="resource-card" data-resource="disk" data-level="0">
+          <div class="resource-heading">
+            <span class="resource-icon resource-icon-disk" aria-hidden="true">I/O</span>
+            <div>
+              <h2>Disco</h2>
+              <p id="disk-basis">Atividade + latência</p>
+            </div>
+            <span class="resource-state" id="disk-state">—</span>
+          </div>
+          <div class="resource-reading">
+            <strong id="disk-value">—</strong><span>%</span>
+          </div>
+          <p class="resource-detail" id="disk-detail">Aquecendo o cálculo de latência…</p>
+          <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
+            <path class="sparkline-fill" id="disk-spark-fill"></path>
+            <path class="sparkline-line" id="disk-spark-line"></path>
+          </svg>
+        </article>
+
+        <article class="resource-card" data-resource="gpu" data-level="0">
+          <div class="resource-heading">
+            <span class="resource-icon resource-icon-gpu" aria-hidden="true">GPU</span>
+            <div>
+              <h2>Gráficos</h2>
+              <p id="gpu-basis">Motor WDDM mais ocupado</p>
+            </div>
+            <span class="resource-state" id="gpu-state">—</span>
+          </div>
+          <div class="resource-reading">
+            <strong id="gpu-value">—</strong><span>%</span>
+          </div>
+          <p class="resource-detail" id="gpu-detail">Detectando suporte do driver…</p>
+          <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
+            <path class="sparkline-fill" id="gpu-spark-fill"></path>
+            <path class="sparkline-line" id="gpu-spark-line"></path>
+          </svg>
+        </article>
+
+        <article class="resource-card" data-resource="network" data-level="0">
+          <div class="resource-heading">
+            <span class="resource-icon resource-icon-network" aria-hidden="true">NET</span>
+            <div>
+              <h2>Rede</h2>
+              <p id="network-basis">Interface mais ocupada</p>
+            </div>
+            <span class="resource-state" id="network-state">—</span>
+          </div>
+          <div class="resource-reading">
+            <strong id="network-value">—</strong><span>%</span>
+          </div>
+          <p class="resource-detail" id="network-detail">Coletando interfaces…</p>
+          <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
+            <path class="sparkline-fill" id="network-spark-fill"></path>
+            <path class="sparkline-line" id="network-spark-line"></path>
+          </svg>
+        </article>
+      </section>
+    </section>
+
+    <section class="area" id="area-clis" role="tabpanel" aria-labelledby="tab-clis"
+             data-area="clis" tabindex="-1" hidden>
+      <section class="panel cli-pressure-panel" aria-labelledby="cli-pressure-title">
+        <div class="panel-heading cli-pressure-heading">
+          <div>
+            <p class="eyebrow">Windows Terminal → shell → CLI → processos filhos</p>
+            <h2 id="cli-pressure-title">Quais CLIs estão pesando na máquina</h2>
+          </div>
+          <span class="panel-count" id="cli-session-count">mapeando sessões</span>
+        </div>
+
+        <div class="terminal-family skeleton" id="terminal-family" data-level="0" aria-live="polite">
+          <div class="terminal-family-copy">
+            <span class="session-state">ANALISANDO</span>
+            <h3>Reconstruindo as árvores do Windows Terminal</h3>
+            <p>Somando shells, CLIs, MCPs, runtimes, builds e testes por ancestralidade de PID.</p>
+          </div>
+        </div>
+
+        <div class="cli-session-heading">
+          <div>
+            <h3>Sessões encontradas</h3>
+            <p>Cada cartão agrega a árvore e explica se ela está protegida, gerenciada ou órfã.</p>
+          </div>
+          <span id="cli-critical-count">—</span>
+        </div>
+
+        <p class="cli-action-status" id="cli-action-status" aria-live="polite">
+          Classificando ações seguras…
         </p>
-        <div class="trust-note">
-          <span class="trust-icon" aria-hidden="true">◎</span>
-          <span>Medição, correlação e inferência aparecem separadas. O painel não inventa causa raiz.</span>
-        </div>
-      </div>
 
-      <div class="pressure-dial" id="pressure-dial" style="--pressure: 0">
-        <div class="pressure-dial-inner">
-          <span id="overall-score">0</span>
-          <small>pressão</small>
+        <div class="cli-session-grid" id="cli-session-grid">
+          <div class="skeleton cli-session-skeleton"></div>
+          <div class="skeleton cli-session-skeleton"></div>
         </div>
-      </div>
+
+        <p class="cli-footnote">
+          Private Bytes é somável e representa commit privado. Working Set aparece como referência,
+          mas pode contar páginas compartilhadas mais de uma vez. A árvore prova propriedade do
+          consumo; o motivo interno exato ainda pode exigir ETW/WPR.
+        </p>
+      </section>
     </section>
 
-    <section class="resource-grid" aria-label="Recursos do sistema">
-      <article class="resource-card" data-resource="cpu" data-level="0">
-        <div class="resource-heading">
-          <span class="resource-icon resource-icon-cpu" aria-hidden="true">CPU</span>
+    <section class="area" id="area-processos" role="tabpanel" aria-labelledby="tab-processos"
+             data-area="processos" tabindex="-1" hidden>
+      <section class="panel consumers-panel" aria-labelledby="consumers-title">
+        <div class="panel-heading consumers-heading">
           <div>
-            <h2>Processador</h2>
-            <p id="cpu-basis">Capacidade total</p>
+            <p class="eyebrow">Atribuição por PID</p>
+            <h2 id="consumers-title">Quem está usando o quê</h2>
           </div>
-          <span class="resource-state" id="cpu-state">—</span>
+          <div class="metric-tabs" role="tablist" aria-label="Ordenar consumidores por recurso">
+            <button class="metric-tab active" type="button" role="tab" aria-selected="true" data-metric="cpu">CPU</button>
+            <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="memory">Memória</button>
+            <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="io">E/S</button>
+            <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="gpu">GPU</button>
+            <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="network">Rede</button>
+          </div>
         </div>
-        <div class="resource-reading">
-          <strong id="cpu-value">—</strong><span>%</span>
-        </div>
-        <p class="resource-detail" id="cpu-detail">Coletando uso total…</p>
-        <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
-          <path class="sparkline-fill" id="cpu-spark-fill"></path>
-          <path class="sparkline-line" id="cpu-spark-line"></path>
-        </svg>
-      </article>
 
-      <article class="resource-card" data-resource="memory" data-level="0">
-        <div class="resource-heading">
-          <span class="resource-icon resource-icon-memory" aria-hidden="true">RAM</span>
-          <div>
-            <h2>Memória</h2>
-            <p id="memory-basis">Disponível + commit</p>
+        <div class="consumer-content">
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Processo</th>
+                  <th>Contexto provável</th>
+                  <th id="metric-column-title">CPU total</th>
+                  <th>Outros sinais</th>
+                </tr>
+              </thead>
+              <tbody id="consumer-rows">
+                <tr>
+                  <td colspan="4"><div class="skeleton table-skeleton"></div></td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-          <span class="resource-state" id="memory-state">—</span>
-        </div>
-        <div class="resource-reading">
-          <strong id="memory-value">—</strong><span>%</span>
-        </div>
-        <p class="resource-detail" id="memory-detail">Coletando memória disponível…</p>
-        <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
-          <path class="sparkline-fill" id="memory-spark-fill"></path>
-          <path class="sparkline-line" id="memory-spark-line"></path>
-        </svg>
-      </article>
 
-      <article class="resource-card" data-resource="disk" data-level="0">
-        <div class="resource-heading">
-          <span class="resource-icon resource-icon-disk" aria-hidden="true">I/O</span>
-          <div>
-            <h2>Disco</h2>
-            <p id="disk-basis">Atividade + latência</p>
-          </div>
-          <span class="resource-state" id="disk-state">—</span>
+          <aside class="process-detail" id="process-detail" aria-live="polite">
+            <div class="detail-empty">
+              <span aria-hidden="true">↗</span>
+              <p>Selecione um processo para ver a relação com pai, categoria e sinais medidos.</p>
+            </div>
+          </aside>
         </div>
-        <div class="resource-reading">
-          <strong id="disk-value">—</strong><span>%</span>
-        </div>
-        <p class="resource-detail" id="disk-detail">Aquecendo o cálculo de latência…</p>
-        <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
-          <path class="sparkline-fill" id="disk-spark-fill"></path>
-          <path class="sparkline-line" id="disk-spark-line"></path>
-        </svg>
-      </article>
 
-      <article class="resource-card" data-resource="gpu" data-level="0">
-        <div class="resource-heading">
-          <span class="resource-icon resource-icon-gpu" aria-hidden="true">GPU</span>
-          <div>
-            <h2>Gráficos</h2>
-            <p id="gpu-basis">Motor WDDM mais ocupado</p>
-          </div>
-          <span class="resource-state" id="gpu-state">—</span>
-        </div>
-        <div class="resource-reading">
-          <strong id="gpu-value">—</strong><span>%</span>
-        </div>
-        <p class="resource-detail" id="gpu-detail">Detectando suporte do driver…</p>
-        <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
-          <path class="sparkline-fill" id="gpu-spark-fill"></path>
-          <path class="sparkline-line" id="gpu-spark-line"></path>
-        </svg>
-      </article>
-
-      <article class="resource-card" data-resource="network" data-level="0">
-        <div class="resource-heading">
-          <span class="resource-icon resource-icon-network" aria-hidden="true">NET</span>
-          <div>
-            <h2>Rede</h2>
-            <p id="network-basis">Interface mais ocupada</p>
-          </div>
-          <span class="resource-state" id="network-state">—</span>
-        </div>
-        <div class="resource-reading">
-          <strong id="network-value">—</strong><span>%</span>
-        </div>
-        <p class="resource-detail" id="network-detail">Coletando interfaces…</p>
-        <svg class="sparkline" viewBox="0 0 240 48" preserveAspectRatio="none" aria-hidden="true">
-          <path class="sparkline-fill" id="network-spark-fill"></path>
-          <path class="sparkline-line" id="network-spark-line"></path>
-        </svg>
-      </article>
+        <p class="table-footnote" id="table-footnote">
+          CPU é normalizada pela capacidade total do computador, não por um único núcleo.
+        </p>
+      </section>
     </section>
 
-    <section class="panel cli-pressure-panel" aria-labelledby="cli-pressure-title">
-      <div class="panel-heading cli-pressure-heading">
-        <div>
-          <p class="eyebrow">Windows Terminal → shell → CLI → processos filhos</p>
-          <h2 id="cli-pressure-title">Quais CLIs estão pesando na máquina</h2>
-        </div>
-        <span class="panel-count" id="cli-session-count">mapeando sessões</span>
-      </div>
+    <section class="area" id="area-diagnostico" role="tabpanel" aria-labelledby="tab-diagnostico"
+             data-area="diagnostico" tabindex="-1" hidden>
+      <section class="analysis-layout">
+        <article class="panel insights-panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Interpretação auditável</p>
+              <h2>O que está acontecendo — e por quê</h2>
+            </div>
+            <span class="panel-count" id="insight-count">0 sinais</span>
+          </div>
+          <div class="insights-list" id="insights-list">
+            <div class="skeleton insight-skeleton"></div>
+            <div class="skeleton insight-skeleton"></div>
+            <div class="skeleton insight-skeleton"></div>
+          </div>
+        </article>
 
-      <div class="terminal-family skeleton" id="terminal-family" data-level="0" aria-live="polite">
-        <div class="terminal-family-copy">
-          <span class="session-state">ANALISANDO</span>
-          <h3>Reconstruindo as árvores do Windows Terminal</h3>
-          <p>Somando shells, CLIs, MCPs, runtimes, builds e testes por ancestralidade de PID.</p>
-        </div>
-      </div>
+        <aside class="panel sample-panel">
+          <div class="panel-heading compact">
+            <div>
+              <p class="eyebrow">Qualidade da leitura</p>
+              <h2>Contexto da amostra</h2>
+            </div>
+          </div>
+          <dl class="sample-stats">
+            <div>
+              <dt>Duração da coleta</dt>
+              <dd id="collection-duration">—</dd>
+            </div>
+            <div>
+              <dt>Próxima leitura</dt>
+              <dd id="refresh-interval">—</dd>
+            </div>
+            <div>
+              <dt>Dados sensíveis</dt>
+              <dd class="safe-value">não expostos</dd>
+            </div>
+            <div>
+              <dt>Custo do próprio painel</dt>
+              <dd id="self-cost">—</dd>
+            </div>
+            <div>
+              <dt>Provedor WMI da máquina</dt>
+              <dd id="self-cost-provider">—</dd>
+            </div>
+          </dl>
+          <p class="sample-footnote" id="self-cost-note">
+            O custo próprio é atribuível ao painel. O provedor WMI atende todos os
+            clientes do computador e aparece apenas como contexto.
+          </p>
+          <div class="sample-callout">
+            <strong id="action-mode-title">Somente leitura</strong>
+            <p id="action-mode-detail">
+              Encerramento de processos está desativado neste servidor.
+            </p>
+          </div>
+          <div class="mini-volume-list" id="volume-list" aria-label="Espaço dos volumes"></div>
+        </aside>
+      </section>
 
-      <div class="cli-session-heading">
-        <div>
-          <h3>Sessões encontradas</h3>
-          <p>Cada cartão agrega a árvore e explica se ela está protegida, gerenciada ou órfã.</p>
-        </div>
-        <span id="cli-critical-count">—</span>
-      </div>
-
-      <p class="cli-action-status" id="cli-action-status" aria-live="polite">
-        Classificando ações seguras…
-      </p>
-
-      <div class="cli-session-grid" id="cli-session-grid">
-        <div class="skeleton cli-session-skeleton"></div>
-        <div class="skeleton cli-session-skeleton"></div>
-      </div>
-
-      <p class="cli-footnote">
-        Private Bytes é somável e representa commit privado. Working Set aparece como referência,
-        mas pode contar páginas compartilhadas mais de uma vez. A árvore prova propriedade do
-        consumo; o motivo interno exato ainda pode exigir ETW/WPR.
-      </p>
-    </section>
-
-    <section class="analysis-layout">
-      <article class="panel insights-panel">
+      <section class="panel capability-panel" aria-labelledby="capability-title">
         <div class="panel-heading">
           <div>
-            <p class="eyebrow">Interpretação auditável</p>
-            <h2>O que está acontecendo — e por quê</h2>
-          </div>
-          <span class="panel-count" id="insight-count">0 sinais</span>
-        </div>
-        <div class="insights-list" id="insights-list">
-          <div class="skeleton insight-skeleton"></div>
-          <div class="skeleton insight-skeleton"></div>
-          <div class="skeleton insight-skeleton"></div>
-        </div>
-      </article>
-
-      <aside class="panel sample-panel">
-        <div class="panel-heading compact">
-          <div>
-            <p class="eyebrow">Qualidade da leitura</p>
-            <h2>Contexto da amostra</h2>
+            <p class="eyebrow">Cobertura e limites</p>
+            <h2 id="capability-title">O que esta máquina consegue revelar</h2>
           </div>
         </div>
-        <dl class="sample-stats">
-          <div>
-            <dt>Duração da coleta</dt>
-            <dd id="collection-duration">—</dd>
-          </div>
-          <div>
-            <dt>Próxima leitura</dt>
-            <dd id="refresh-interval">—</dd>
-          </div>
-          <div>
-            <dt>Dados sensíveis</dt>
-            <dd class="safe-value">não expostos</dd>
-          </div>
-          <div>
-            <dt>Custo do próprio painel</dt>
-            <dd id="self-cost">—</dd>
-          </div>
-          <div>
-            <dt>Provedor WMI da máquina</dt>
-            <dd id="self-cost-provider">—</dd>
-          </div>
-        </dl>
-        <p class="sample-footnote" id="self-cost-note">
-          O custo próprio é atribuível ao painel. O provedor WMI atende todos os
-          clientes do computador e aparece apenas como contexto.
-        </p>
-        <div class="sample-callout">
-          <strong id="action-mode-title">Somente leitura</strong>
-          <p id="action-mode-detail">
-            Encerramento de processos está desativado neste servidor.
-          </p>
+        <div class="capability-grid" id="capability-grid">
+          <div class="skeleton capability-skeleton"></div>
+          <div class="skeleton capability-skeleton"></div>
+          <div class="skeleton capability-skeleton"></div>
+          <div class="skeleton capability-skeleton"></div>
         </div>
-        <div class="mini-volume-list" id="volume-list" aria-label="Espaço dos volumes"></div>
-      </aside>
-    </section>
-
-    <section class="panel consumers-panel" aria-labelledby="consumers-title">
-      <div class="panel-heading consumers-heading">
-        <div>
-          <p class="eyebrow">Atribuição por PID</p>
-          <h2 id="consumers-title">Quem está usando o quê</h2>
-        </div>
-        <div class="metric-tabs" role="tablist" aria-label="Ordenar consumidores por recurso">
-          <button class="metric-tab active" type="button" role="tab" aria-selected="true" data-metric="cpu">CPU</button>
-          <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="memory">Memória</button>
-          <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="io">E/S</button>
-          <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="gpu">GPU</button>
-          <button class="metric-tab" type="button" role="tab" aria-selected="false" data-metric="network">Rede</button>
-        </div>
-      </div>
-
-      <div class="consumer-content">
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Processo</th>
-                <th>Contexto provável</th>
-                <th id="metric-column-title">CPU total</th>
-                <th>Outros sinais</th>
-              </tr>
-            </thead>
-            <tbody id="consumer-rows">
-              <tr>
-                <td colspan="4"><div class="skeleton table-skeleton"></div></td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <aside class="process-detail" id="process-detail" aria-live="polite">
-          <div class="detail-empty">
-            <span aria-hidden="true">↗</span>
-            <p>Selecione um processo para ver a relação com pai, categoria e sinais medidos.</p>
-          </div>
-        </aside>
-      </div>
-
-      <p class="table-footnote" id="table-footnote">
-        CPU é normalizada pela capacidade total do computador, não por um único núcleo.
-      </p>
-    </section>
-
-    <section class="panel capability-panel" aria-labelledby="capability-title">
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">Cobertura e limites</p>
-          <h2 id="capability-title">O que esta máquina consegue revelar</h2>
-        </div>
-      </div>
-      <div class="capability-grid" id="capability-grid">
-        <div class="skeleton capability-skeleton"></div>
-        <div class="skeleton capability-skeleton"></div>
-        <div class="skeleton capability-skeleton"></div>
-        <div class="skeleton capability-skeleton"></div>
-      </div>
+      </section>
     </section>
   </main>
 

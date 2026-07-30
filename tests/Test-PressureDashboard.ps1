@@ -432,6 +432,42 @@ foreach ($cliUiMarker in @(
         -Condition $htmlContent.Contains($cliUiMarker) `
         -Message "HTML deve conter a visao de arvores de CLI: $cliUiMarker"
 }
+foreach ($areaUiMarker in @(
+    'sticky-shell',
+    'pulse-strip',
+    'strip-meters',
+    'area-nav',
+    'role="tablist"',
+    'id="area-visao"',
+    'id="area-clis"',
+    'id="area-processos"',
+    'id="area-diagnostico"',
+    'role="tabpanel"',
+    'aria-controls="area-clis"'
+)) {
+    Assert-PressureCondition `
+        -Condition $htmlContent.Contains($areaUiMarker) `
+        -Message "HTML deve dividir a tela em areas com faixa viva: $areaUiMarker"
+}
+foreach ($areaScriptMarker in @(
+    'activateArea',
+    'areaOrder',
+    'pulso-area',
+    'setTabBadge',
+    'hashchange',
+    'strip-score',
+    'strip-${key}'
+)) {
+    Assert-PressureCondition `
+        -Condition $javaScriptContent.Contains($areaScriptMarker) `
+        -Message "JavaScript deve controlar as areas e a faixa viva: $areaScriptMarker"
+}
+# A faixa viva só cumpre a função se todo recurso tiver espelho no topo.
+foreach ($stripId in @('strip-cpu', 'strip-memory', 'strip-disk', 'strip-gpu', 'strip-network')) {
+    Assert-PressureCondition `
+        -Condition $htmlContent.Contains("id=`"$stripId`"") `
+        -Message "Faixa viva deve espelhar o recurso: $stripId"
+}
 foreach ($cliScriptMarker in @(
     'TerminalSummary',
     'CliSessions',

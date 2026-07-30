@@ -196,6 +196,202 @@ button {
   }
 }
 
+/* Cabeçalho, faixa viva e abas viajam juntos: a leitura de relance não pode
+   depender da área ativa nem da posição da rolagem. */
+.sticky-shell {
+  position: sticky;
+  z-index: 20;
+  top: 0;
+  background: rgba(5, 14, 12, 0.82);
+  backdrop-filter: blur(22px);
+}
+
+.sticky-shell .topbar {
+  position: static;
+  background: transparent;
+  backdrop-filter: none;
+}
+
+.pulse-strip {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 9px max(24px, calc((100vw - 1440px) / 2));
+  border-bottom: 1px solid rgba(171, 218, 202, 0.08);
+}
+
+.strip-score {
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 5px 11px;
+  border: 1px solid color-mix(in srgb, var(--level-color) 32%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--level-color) 9%, transparent);
+  transition: border-color 400ms ease, background 400ms ease;
+}
+
+.strip-score strong {
+  color: var(--level-color);
+  font-size: 17px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.strip-score small {
+  color: var(--subtle);
+  font-size: 9px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.strip-state {
+  color: var(--level-color);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  white-space: nowrap;
+}
+
+.strip-meters {
+  display: flex;
+  flex: 1;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  overflow-x: auto;
+  list-style: none;
+  scrollbar-width: thin;
+}
+
+.strip-meter {
+  display: inline-flex;
+  gap: 7px;
+  align-items: baseline;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--level-color) 20%, var(--line));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--level-color) 6%, transparent);
+  white-space: nowrap;
+  transition: border-color 400ms ease, background 400ms ease;
+}
+
+.strip-meter-label {
+  color: var(--subtle);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.strip-meter-value {
+  color: var(--level-color);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.area-nav {
+  display: flex;
+  gap: 6px;
+  padding: 8px max(24px, calc((100vw - 1440px) / 2)) 0;
+  overflow-x: auto;
+  border-bottom: 1px solid rgba(171, 218, 202, 0.1);
+  scrollbar-width: none;
+}
+
+.area-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.area-tab {
+  display: grid;
+  gap: 1px;
+  padding: 9px 15px 11px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 12px 12px 0 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  transition: color 200ms ease, background 200ms ease, border-color 200ms ease;
+}
+
+.area-tab:hover {
+  color: var(--text);
+  background: rgba(171, 218, 202, 0.05);
+}
+
+.area-tab:focus-visible {
+  outline: 2px solid var(--mint);
+  outline-offset: -2px;
+}
+
+.area-tab.active {
+  border-bottom-color: var(--mint);
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(102, 240, 189, 0.11), transparent);
+}
+
+.area-tab-label {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.area-tab small {
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+
+.area-tab-badge {
+  display: inline-grid;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--level-color) 34%, transparent);
+  border-radius: 999px;
+  color: var(--level-color);
+  background: color-mix(in srgb, var(--level-color) 12%, transparent);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+.area-tab-badge[data-tone="attention"] {
+  --level-color: var(--amber);
+}
+
+.area-tab-badge[data-tone="critical"] {
+  --level-color: var(--red);
+}
+
+.area[hidden] {
+  display: none;
+}
+
+.area {
+  display: grid;
+  gap: 26px;
+}
+
+/* O espaçamento entre blocos agora é do grid da área. Os `margin-top` legados
+   de cada painel somariam ao gap, então são neutralizados no nível da área. */
+.area > section,
+.area > article {
+  margin-top: 0;
+}
+
+.area:focus {
+  outline: none;
+}
+
 main {
   width: min(1440px, calc(100% - 48px));
   margin: 0 auto;
@@ -1742,6 +1938,20 @@ noscript {
     padding-left: 18px;
   }
 
+  .pulse-strip,
+  .area-nav {
+    padding-right: 18px;
+    padding-left: 18px;
+  }
+
+  .strip-state {
+    display: none;
+  }
+
+  .area-tab small {
+    display: none;
+  }
+
   .live-divider,
   #last-update {
     display: none;
@@ -1801,6 +2011,18 @@ noscript {
 
   .live-state {
     padding: 0 10px;
+  }
+
+  .strip-score small {
+    display: none;
+  }
+
+  .strip-meter-label {
+    font-size: 8px;
+  }
+
+  .area-tab {
+    padding: 9px 11px 10px;
   }
 
   h1 {

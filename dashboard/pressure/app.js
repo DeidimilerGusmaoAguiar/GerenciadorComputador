@@ -5,6 +5,7 @@
     snapshot: null,
     metric: "cpu",
     selectedPid: null,
+    area: "",
     retryTimer: null,
     cliSessionsByRoot: new Map(),
     actionToken: null,
@@ -133,6 +134,106 @@
     byId("live-label").textContent = label;
   }
 
+  // A tela é dividida em áreas; só a ativa fica no DOM visível. A faixa viva do
+  // topo continua atualizada em todas elas, para que trocar de área não custe a
+  // leitura de relance do sistema.
+  const areaOrder = ["visao", "clis", "processos", "diagnostico"];
+  const areaStorageKey = "pulso-area";
+
+  function areaFromHash() {
+    const candidate = String(window.location.hash || "").replace(/^#/, "");
+    return areaOrder.includes(candidate) ? candidate : "";
+  }
+
+  function storedArea() {
+    try {
+      const candidate = window.localStorage.getItem(areaStorageKey);
+      return areaOrder.includes(candidate) ? candidate : "";
+    } catch {
+      // Navegador com armazenamento bloqueado não impede o painel de funcionar.
+      return "";
+    }
+  }
+
+  function activateArea(name, options = {}) {
+    const area = areaOrder.includes(name) ? name : areaOrder[0];
+    const { focusPanel = false, syncHash = true } = options;
+    if (viewState.area === area) {
+      return;
+    }
+    viewState.area = area;
+
+    areaOrder.forEach((candidate) => {
+      const tab = byId(`tab-${candidate}`);
+      const panel = byId(`area-${candidate}`);
+      const active = candidate === area;
+      tab.classList.toggle("active", active);
+      tab.setAttribute("aria-selected", String(active));
+      tab.tabIndex = active ? 0 : -1;
+      panel.hidden = !active;
+    });
+
+    if (focusPanel) {
+      byId(`area-${area}`).focus({ preventScroll: true });
+    }
+    if (syncHash && areaFromHash() !== area) {
+      // replaceState evita empilhar uma entrada de histórico por clique.
+      window.history.replaceState(null, "", `#${area}`);
+    }
+    try {
+      window.localStorage.setItem(areaStorageKey, area);
+    } catch {
+      // Sem persistência a área volta ao padrão na próxima carga; nada além disso.
+    }
+  }
+
+  function setTabBadge(area, text, tone) {
+    const badge = byId(`badge-${area}`);
+    if (!badge) {
+      return;
+    }
+    const label = String(text ?? "").trim();
+    badge.textContent = label;
+    badge.hidden = label === "";
+    badge.dataset.tone = tone || "neutral";
+  }
+
+  function initAreas() {
+    areaOrder.forEach((candidate) => {
+      byId(`tab-${candidate}`).addEventListener("click", () => {
+        activateArea(candidate);
+      });
+    });
+
+    byId("area-nav").addEventListener("keydown", (event) => {
+      const step = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: 1, ArrowUp: -1 }[event.key];
+      let target = "";
+      if (step) {
+        const current = areaOrder.indexOf(viewState.area);
+        target = areaOrder[(current + step + areaOrder.length) % areaOrder.length];
+      } else if (event.key === "Home") {
+        target = areaOrder[0];
+      } else if (event.key === "End") {
+        target = areaOrder[areaOrder.length - 1];
+      }
+      if (!target) {
+        return;
+      }
+      event.preventDefault();
+      activateArea(target);
+      byId(`tab-${target}`).focus();
+    });
+
+    window.addEventListener("hashchange", () => {
+      const fromHash = areaFromHash();
+      if (fromHash) {
+        activateArea(fromHash, { focusPanel: true, syncHash: false });
+      }
+    });
+
+    activateArea(areaFromHash() || storedArea() || areaOrder[0]);
+  }
+
   function renderSparkline(resourceKey, value) {
     const history = viewState.history[resourceKey];
     history.push(clamp(value, 0, 100));
@@ -177,6 +278,11 @@
     const dial = byId("pressure-dial");
     dial.dataset.level = level;
     dial.style.setProperty("--pressure", score.toFixed(1));
+
+    byId("strip-score").textContent = Math.round(score).toString();
+    byId("strip-score-shell").dataset.level = level;
+    byId("strip-state").dataset.level = level;
+    byId("strip-state").textContent = overall.State;
   }
 
   function renderResources(snapshot) {
@@ -195,6 +301,14 @@
       byId(`${key}-detail`).textContent = resource.Detail;
       byId(`${key}-basis`).textContent = resource.Basis;
       renderSparkline(key, resource.Available ? resource.Score : 0);
+
+      const meter = document.querySelector(`.strip-meter[data-resource="${key}"]`);
+      if (meter) {
+        meter.dataset.level = String(resource.Level);
+        byId(`strip-${key}`).textContent = resource.Available
+          ? `${formatNumber(resource.Value, 0)}%`
+          : "N/D";
+      }
     });
   }
 
@@ -337,6 +451,15 @@
     byId("cli-critical-count").textContent =
       `${criticalCount} ${criticalCount === 1 ? "crítica" : "críticas"} · ` +
       `${attentionCount} em atenção`;
+    // A aba precisa avisar sem obrigar a entrar nela: primeiro o que é crítico,
+    // depois o que pede atenção, e só então a contagem de sessões.
+    if (criticalCount > 0) {
+      setTabBadge("clis", criticalCount, "critical");
+    } else if (attentionCount > 0) {
+      setTabBadge("clis", attentionCount, "attention");
+    } else {
+      setTabBadge("clis", sessions.length, "neutral");
+    }
     byId("cli-action-status").textContent = viewState.actionMessage ||
       (actionsEnabled
         ? `${orphanCount} ${orphanCount === 1 ? "árvore órfã habilitada" : "árvores órfãs habilitadas"} para confirmação manual.`
@@ -442,6 +565,11 @@
     const insights = snapshot.Insights || [];
     byId("insight-count").textContent =
       `${insights.length} ${insights.length === 1 ? "sinal" : "sinais"}`;
+    setTabBadge(
+      "diagnostico",
+      insights.length || "",
+      insights.some((insight) => Number(insight.Level) >= 3) ? "critical" : "neutral"
+    );
 
     byId("insights-list").innerHTML = insights
       .map(
@@ -878,6 +1006,8 @@
       viewState.retryTimer = window.setTimeout(loadSnapshot, 5000);
     }
   }
+
+  initAreas();
 
   document.querySelectorAll(".metric-tab").forEach((tab) => {
     tab.addEventListener("click", () => {

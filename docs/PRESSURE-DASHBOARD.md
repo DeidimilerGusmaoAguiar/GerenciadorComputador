@@ -213,6 +213,40 @@ O servidor:
 - quando há opt-in, aceita somente a rota nominal com token aleatório por
   instância e não oferece prioridade, limpeza ou outros ajustes do host.
 
+## Organização da tela
+
+A tela é dividida em áreas, e não em uma página única de rolagem longa. O topo
+permanece fixo e reúne três coisas que valem em qualquer área:
+
+- estado da conexão e horário da última leitura;
+- a faixa viva: pressão geral, veredito e um medidor por recurso (CPU, RAM,
+  disco, GPU, rede);
+- a navegação entre áreas.
+
+| Área | Âncora | Conteúdo |
+|---|---|---|
+| Visão geral | `#visao` | Dial de pressão, resumo textual e os cinco cartões de recurso com sparkline |
+| CLIs e sessões | `#clis` | Árvore do Windows Terminal, cartões de sessão e o diálogo de encerramento |
+| Processos | `#processos` | Tabela por PID, ordenação por métrica e detalhe do processo selecionado |
+| Diagnóstico | `#diagnostico` | Sinais interpretados, contexto da amostra, volumes e limites de cobertura |
+
+Somente a área ativa fica visível; a faixa viva continua atualizada em todas
+elas, de modo que trocar de área não custa o acompanhamento de relance. As abas
+de CLIs e Diagnóstico exibem um contador: sessões críticas, sessões em atenção
+ou o total de sinais, o que evita entrar na área só para descobrir se há algo
+acontecendo.
+
+Navegação:
+
+- clique nas abas, ou use as setas, `Home` e `End` com o foco na barra;
+- a âncora na URL abre direto na área (`http://127.0.0.1:8765/#processos`);
+- a última área escolhida é lembrada no navegador. Sem permissão de
+  armazenamento local, o painel volta a abrir em Visão geral.
+
+Os arquivos do front-end são lidos do disco a cada requisição, então editar
+`dashboard\pressure\*` e recarregar a página basta — não é preciso reiniciar o
+servidor.
+
 ## Fontes das métricas
 
 | Recurso | Fonte nativa | Como é interpretado |
