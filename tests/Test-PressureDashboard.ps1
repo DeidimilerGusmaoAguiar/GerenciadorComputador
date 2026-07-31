@@ -157,9 +157,84 @@ $legacyAssessment = Get-PressureAssessment `
 Assert-PressureCondition `
     -Condition (
         @($legacyAssessment.Resources | Where-Object Key -eq 'memory')[0].Available -and
-        @($legacyAssessment.Resources | Where-Object Key -eq 'cpu')[0].Available
+        @($legacyAssessment.Resources | Where-Object Key -eq 'cpu')[0].Available -and
+        @($legacyAssessment.Resources | Where-Object Key -eq 'disk')[0].Available -and
+        @($legacyAssessment.Resources | Where-Object Key -eq 'network')[0].Available
     ) `
     -Message 'Amostra sem os campos novos deve continuar valendo como medida'
+
+# Disco combina duas fontes independentes. Perder os contadores de atividade nao
+# pode calar o alarme de espaco livre, que vem da capacidade dos volumes.
+$diskNoActivity = New-TestMetrics -Overrides @{
+    DiskActivityAvailable = $false
+    DiskPercent = 0
+    DiskQueue = 0
+    DiskLatencyMs = $null
+    LowestFreeGB = 1.8
+}
+$diskNoActivityAssessment = Get-PressureAssessment `
+    -Metrics $diskNoActivity `
+    -GpuAvailable $true
+$diskNoActivityResource = @(
+    $diskNoActivityAssessment.Resources | Where-Object Key -eq 'disk'
+)[0]
+Assert-PressureCondition `
+    -Condition $diskNoActivityResource.Available `
+    -Message 'Disco sem contadores mas com capacidade conhecida continua medido'
+Assert-PressureCondition `
+    -Condition ($diskNoActivityResource.Level -eq 3) `
+    -Message 'Volume abaixo de 2 GB deve alarmar mesmo sem contadores de atividade'
+Assert-PressureCondition `
+    -Condition ($null -eq $diskNoActivityResource.Value) `
+    -Message 'Disco sem contadores nao pode publicar 0% de atividade'
+
+$diskFolgado = New-TestMetrics -Overrides @{
+    DiskActivityAvailable = $false
+    DiskPercent = 0
+    DiskLatencyMs = $null
+    LowestFreeGB = 60
+}
+$diskFolgadoAssessment = Get-PressureAssessment `
+    -Metrics $diskFolgado `
+    -GpuAvailable $true
+Assert-PressureCondition `
+    -Condition (
+        @($diskFolgadoAssessment.Resources | Where-Object Key -eq 'disk')[0].Level -eq 0
+    ) `
+    -Message 'Disco sem contadores e com espaco sobrando nao inventa pressao'
+
+$diskCego = New-TestMetrics -Overrides @{
+    DiskActivityAvailable = $false
+    DiskPercent = 0
+    DiskLatencyMs = $null
+    LowestFreeGB = $null
+}
+$diskCegoAssessment = Get-PressureAssessment `
+    -Metrics $diskCego `
+    -GpuAvailable $true
+Assert-PressureCondition `
+    -Condition (
+        -not @($diskCegoAssessment.Resources | Where-Object Key -eq 'disk')[0].Available
+    ) `
+    -Message 'Disco sem contadores e sem capacidade deve sair como indisponivel'
+
+$networkUnread = New-TestMetrics -Overrides @{
+    NetworkAvailable = $false
+    NetworkPercent = 0
+    NetworkMBps = 0
+}
+$networkUnreadAssessment = Get-PressureAssessment `
+    -Metrics $networkUnread `
+    -GpuAvailable $true
+$networkResource = @(
+    $networkUnreadAssessment.Resources | Where-Object Key -eq 'network'
+)[0]
+Assert-PressureCondition `
+    -Condition (-not $networkResource.Available) `
+    -Message 'Rede sem leitura deve aparecer como indisponivel'
+Assert-PressureCondition `
+    -Condition ($null -eq $networkResource.Value) `
+    -Message 'Rede sem leitura nao pode publicar 0 MB/s como se estivesse ociosa'
 
 $cliContext = Get-PressureProcessContext `
     -Name 'node.exe' `

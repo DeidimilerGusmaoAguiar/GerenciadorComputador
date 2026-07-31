@@ -1337,8 +1337,23 @@ function Get-PressureAssessment {
     } else {
         [double]$Metrics.LowestFreeGB
     }
+    # Disco mistura duas fontes: espaço livre vem da capacidade dos volumes e
+    # atividade vem dos contadores. Perder os contadores não pode calar o
+    # alarme de espaço, que é o que impede uma limpeza de começar.
+    $diskActivityAvailable = Test-PressureMetricAvailable `
+        -Metrics $Metrics `
+        -Property 'DiskActivityAvailable'
+    $diskCapacityKnown = $null -ne $lowestFreeGB
+    $diskAvailable = $diskActivityAvailable -or $diskCapacityKnown
+
     $diskLevel = 0
-    $diskBasis = 'Tempo ativo, fila, latência e espaço livre dos volumes locais.'
+    $diskBasis = if ($diskActivityAvailable) {
+        'Tempo ativo, fila, latência e espaço livre dos volumes locais.'
+    } elseif ($diskCapacityKnown) {
+        'Os contadores de disco não responderam; espaço livre segue medido.'
+    } else {
+        'Nem os contadores de disco nem a capacidade dos volumes responderam.'
+    }
     if ($null -ne $lowestFreeGB -and $lowestFreeGB -lt 0.5) {
         $diskLevel = 4
         $diskBasis = 'Há um volume local com menos de 500 MB livres.'
@@ -1348,6 +1363,8 @@ function Get-PressureAssessment {
     } elseif ($null -ne $lowestFreeGB -and $lowestFreeGB -lt 5) {
         $diskLevel = 2
         $diskBasis = 'Há um volume local com menos de 5 GB livres.'
+    } elseif (-not $diskActivityAvailable) {
+        $diskLevel = 0
     } elseif ($null -ne $diskLatencyMs -and $diskLatencyMs -ge 50 -and $diskStreak -ge 3) {
         $diskLevel = 3
         $diskBasis = "Latência acima de 50 ms por $diskStreak ciclos; confirme por uma janela de pelo menos um minuto."
@@ -1379,10 +1396,14 @@ function Get-PressureAssessment {
     } else {
         0
     }
-    $diskScore = [math]::Max(
-        [math]::Min(100, $diskPercent),
-        [math]::Max($diskLatencyScore, $diskCapacityScore)
-    )
+    $diskScore = if ($diskActivityAvailable) {
+        [math]::Max(
+            [math]::Min(100, $diskPercent),
+            [math]::Max($diskLatencyScore, $diskCapacityScore)
+        )
+    } else {
+        [double]$diskCapacityScore
+    }
     $latencyDetail = if ($null -eq $diskLatencyMs) {
         'latência aquecendo'
     } else {
@@ -1393,10 +1414,21 @@ function Get-PressureAssessment {
         -Label 'Disco' `
         -Level $diskLevel `
         -Score $diskScore `
-        -Value ([math]::Round([math]::Min(100, $diskPercent), 1)) `
+        -Value $(if ($diskActivityAvailable) {
+            [math]::Round([math]::Min(100, $diskPercent), 1)
+        } else {
+            $null
+        }) `
         -Unit '%' `
-        -Detail "$latencyDetail • fila $([math]::Round([double]$Metrics.DiskQueue, 2))" `
-        -Basis $diskBasis
+        -Detail $(if ($diskActivityAvailable) {
+            "$latencyDetail • fila $([math]::Round([double]$Metrics.DiskQueue, 2))"
+        } elseif ($diskCapacityKnown) {
+            "atividade indisponível • $([math]::Round($lowestFreeGB, 1)) GB livres no volume mais apertado"
+        } else {
+            'leitura indisponível nesta amostra'
+        }) `
+        -Basis $diskBasis `
+        -Available $diskAvailable
 
     $gpuPercent = [double]$Metrics.GpuPercent
     $gpuLevel = if (-not $GpuAvailable) {
@@ -1436,8 +1468,13 @@ function Get-PressureAssessment {
         -Basis $gpuBasis `
         -Available $GpuAvailable
 
+    $networkAvailable = Test-PressureMetricAvailable `
+        -Metrics $Metrics `
+        -Property 'NetworkAvailable'
     $networkPercent = [double]$Metrics.NetworkPercent
-    $networkLevel = if ($networkPercent -ge 80 -and $networkStreak -ge 3) {
+    $networkLevel = if (-not $networkAvailable) {
+        0
+    } elseif ($networkPercent -ge 80 -and $networkStreak -ge 3) {
         3
     } elseif ($networkPercent -ge 80) {
         2
@@ -1446,7 +1483,9 @@ function Get-PressureAssessment {
     } else {
         0
     }
-    $networkBasis = if ($networkStreak -ge 3) {
+    $networkBasis = if (-not $networkAvailable) {
+        'Nenhuma interface respondeu nesta amostra.'
+    } elseif ($networkStreak -ge 3) {
         "Interface mais ocupada acima de 80% por $networkStreak ciclos."
     } else {
         'Uso comparado à velocidade nominal informada pelo adaptador.'
@@ -1455,11 +1494,16 @@ function Get-PressureAssessment {
         -Key 'network' `
         -Label 'Rede' `
         -Level $networkLevel `
-        -Score $networkPercent `
-        -Value ([math]::Round($networkPercent, 1)) `
+        -Score $(if ($networkAvailable) { $networkPercent } else { 0.0 }) `
+        -Value $(if ($networkAvailable) { [math]::Round($networkPercent, 1) } else { $null }) `
         -Unit '%' `
-        -Detail "$([math]::Round([double]$Metrics.NetworkMBps, 2)) MB/s agregados" `
-        -Basis $networkBasis
+        -Detail $(if ($networkAvailable) {
+            "$([math]::Round([double]$Metrics.NetworkMBps, 2)) MB/s agregados"
+        } else {
+            'leitura indisponível nesta amostra'
+        }) `
+        -Basis $networkBasis `
+        -Available $networkAvailable
 
     $resources = @($cpu, $memory, $disk, $gpu, $network)
     $measured = @(
@@ -4578,6 +4622,8 @@ function Get-PressureSnapshot {
         Timestamp = (Get-Date).ToString('o')
         CpuAvailable = $cpuAvailable
         MemoryAvailable = $memoryAvailable
+        DiskActivityAvailable = $diskTotal.Count -gt 0
+        NetworkAvailable = $networkRows.Count -gt 0
         CpuPercent = [math]::Round($cpuPercent, 1)
         AvailableMB = [math]::Round($availableMB, 1)
         AvailablePercent = [math]::Round($availablePercent, 1)
