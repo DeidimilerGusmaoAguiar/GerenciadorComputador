@@ -39,6 +39,7 @@ $requiredPaths = @(
     'docs\MEMORY.md',
     'docs\PRESSURE-DASHBOARD.md',
     '.claude\settings.json',
+    '.claude\skills\custo-varredura\SKILL.md',
     'scripts\collect-memory.ps1',
     'scripts\sync-cli-profiles.ps1',
     'scripts\perfis-cli.example.json',
@@ -197,7 +198,12 @@ foreach ($requiredPressureMarker in @(
     'Get-PressureAdaptiveRefreshSeconds',
     'Test-PressureExclusionCoverage',
     'Get-PressureCliHomeCandidates',
-    'Get-PressureCliHomeRoots'
+    'Get-PressureCliHomeRoots',
+    'Get-PressureScanProcess',
+    'ConvertFrom-PressureMpLog',
+    'Get-PressureScanCost',
+    'ConvertTo-PressureExclusionSuggestion',
+    'Update-PressureScanCostCache'
 )) {
     Assert-PublicCondition `
         -Condition $pressureCoreContent.Contains($requiredPressureMarker) `
@@ -278,6 +284,31 @@ if ($exampleMapValid) {
         -Condition (-not ($exampleMapContent -match '(?i)C:\\\\Users')) `
         -Message 'Exemplo de mapa de perfis contem caminho de usuario real'
 }
+
+$skillContent = [IO.File]::ReadAllText(
+    (Join-Path $repoRoot '.claude\skills\custo-varredura\SKILL.md')
+)
+foreach ($requiredSkillMarker in @(
+    'name: custo-varredura',
+    'Somente leitura',
+    # A recomendacao por padrao generico e requisito, nao estilo: exclusao
+    # literal nao sobrevive a outro perfil nem a outra estacao.
+    'Sempre por padrão, nunca por caminho literal',
+    'decisão não é sua nem do usuário',
+    'ordem de grandeza e ranking'
+)) {
+    Assert-PublicCondition `
+        -Condition $skillContent.Contains($requiredSkillMarker) `
+        -Message "Skill de custo de varredura nao contem: $requiredSkillMarker"
+}
+# A skill precisa proibir contorno explicitamente. Procurar pela mera mencao a
+# "desativar" acusaria justamente o texto da proibicao.
+Assert-PublicCondition `
+    -Condition (
+        $skillContent.Contains('não altera configuração de antimalware') -and
+        $skillContent.Contains('não deve sugerir contornos')
+    ) `
+    -Message 'Skill deve proibir explicitamente contornar a protecao'
 
 $settingsPath = Join-Path $repoRoot '.claude\settings.json'
 $settingsContent = [IO.File]::ReadAllText($settingsPath)

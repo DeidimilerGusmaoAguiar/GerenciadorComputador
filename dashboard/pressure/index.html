@@ -396,6 +396,35 @@
         </p>
       </section>
 
+      <section class="panel scancost-panel" aria-labelledby="scancost-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Contabilidade do próprio antimalware</p>
+            <h2 id="scancost-title">O que está sendo varrido</h2>
+          </div>
+          <span class="panel-count" id="scancost-count">em repouso</span>
+        </div>
+        <p class="exclusion-schedule" id="scancost-note">
+          Medido apenas quando o motor está trabalhando; entre leituras vale a última.
+        </p>
+        <div class="scancost-columns">
+          <div>
+            <h3>Processos que mais custam</h3>
+            <div class="scancost-list" id="scancost-processes"></div>
+          </div>
+          <div>
+            <h3>Diretórios que mais custam</h3>
+            <div class="scancost-list" id="scancost-paths"></div>
+          </div>
+        </div>
+        <p class="exclusion-footnote">
+          Tempo e contagem vêm do log do antimalware, amostrados por ele: valem como ordem de
+          grandeza e ranking, não como auditoria de arquivos. As sugestões saem sempre como
+          padrão genérico, para caber em política — nunca como caminho literal desta máquina.
+          Decidir exclusão é da área de segurança.
+        </p>
+      </section>
+
       <section class="panel capability-panel" aria-labelledby="capability-title">
         <div class="panel-heading">
           <div>

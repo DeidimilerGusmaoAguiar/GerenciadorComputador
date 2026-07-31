@@ -1847,6 +1847,58 @@ tbody tr.selected {
   font-size: 10px;
 }
 
+.scancost-panel {
+  padding: 28px;
+}
+
+.scancost-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.scancost-columns h3 {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.scancost-list {
+  display: grid;
+  gap: 8px;
+}
+
+.scancost-item {
+  display: grid;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--level-color) 24%, var(--line));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--level-color) 5%, rgba(6, 18, 15, 0.56));
+}
+
+.scancost-item small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.scancost-item .scancost-suggestion {
+  color: var(--text);
+}
+
+.scancost-item code {
+  padding: 1px 5px;
+  border-radius: 6px;
+  background: rgba(102, 240, 189, 0.1);
+  color: var(--mint);
+  font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
 .exclusion-footnote {
   margin: 16px 0 0;
   color: var(--subtle);

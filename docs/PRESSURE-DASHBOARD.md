@@ -248,6 +248,69 @@ Os arquivos do front-end são lidos do disco a cada requisição, então editar
 servidor. Mudança no coletor é diferente: `pressure-core.ps1` é carregado na
 memória quando o processo sobe, então só vale em instância nova.
 
+### Detecção de varredura em andamento
+
+`FullScanStartTime` e `FullScanEndTime` descrevem a varredura **anterior**: o
+provedor só os atualiza quando ela termina. Comparar um com o outro responde
+"nada em andamento" justamente enquanto o motor consome a máquina — foi o que
+aconteceu em 30/07/2026, com `MsMpEng.exe` em 47% da capacidade total e o painel
+declarando `ScanInProgress = False`.
+
+O painel passa a somar um segundo sinal: o processo de varredura. `MpCmdRun.exe`
+também executa atualização de assinatura e outras tarefas, então quem decide é a
+linha de comando — `Scan` presente, e `-ScheduleJob` distinguindo agendada de sob
+demanda. Basta um dos dois sinais para declarar varredura ativa, e o snapshot
+informa em `ScanSource` qual deles respondeu.
+
+O painel também expõe a idade das assinaturas (`SignatureAgeDays`). Uma
+varredura pesada com definição defasada custa o mesmo e protege menos, então o
+número muda a leitura de todo o resto da seção.
+
+Nada disso inicia, interrompe ou reconfigura varredura: é leitura.
+
+### O que está sendo varrido, e quanto custa
+
+O provedor não expõe a lista de arquivos de uma varredura. O motor, porém,
+registra no próprio log de suporte quanto tempo gastou por processo e qual foi o
+arquivo mais caro de cada um. O painel lê isso e monta dois rankings na área
+Diagnóstico: processos e diretórios, ordenados por segundos de varredura.
+
+Custo de leitura, que é a razão de existirem travas:
+
+- **só recalcula sob condição** — varredura em andamento, ou motor acima do
+  limiar de CPU. Máquina tranquila não paga por um ranking que diria apenas que
+  nada está acontecendo;
+- **cache entre recálculos** (`-ScanCostRefreshSeconds`, padrão 600 s). O
+  ranking descreve minutos de trabalho acumulado e não muda de forma útil a cada
+  ciclo;
+- **leitura pela cauda do log**, não do arquivo inteiro;
+- **volume resolvido por dispositivo**, não por caminho. Traduzir
+  `\Device\HarddiskVolumeN` uma vez por volume em lugar de uma vez por arquivo
+  foi o que tirou a operação da casa de dezenas de segundos.
+
+A última leitura é preservada depois que o episódio passa: saber o que doeu
+continua útil quando a máquina já voltou ao normal.
+
+Sem privilégio administrativo o log não é legível, e a seção informa isso em vez
+de falhar — é um detalhe a mais, não um requisito do painel.
+
+#### Recomendações saem por padrão, nunca por caminho
+
+Cada diretório do ranking vem com um **padrão genérico** e uma categoria, não com
+o caminho literal da máquina. Exclusão literal não sobrevive a outro usuário, a
+outra estação nem a um perfil criado depois; política de antimalware se define
+por classe de conteúdo. Caminho do sistema operacional é classificado e
+explicitamente **não** vira candidato a exclusão, e conteúdo fora das famílias
+conhecidas volta sem sugestão, em vez de receber um padrão inventado.
+
+O que aparece no navegador tem o diretório do usuário substituído por
+`%USERPROFILE%`. Caminho completo fica no relatório local, que é o que se anexa a
+um chamado.
+
+Para investigação pontual fora do painel, existe a skill `custo-varredura` em
+`.claude\skills\`, que usa as mesmas funções do núcleo e carrega as regras de
+recomendação.
+
 ### Perfis de CLI expostos ao antimalware
 
 A área Diagnóstico tem lugar fixo para isso, e não apenas quando o disco já está

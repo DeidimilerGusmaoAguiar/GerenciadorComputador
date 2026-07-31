@@ -670,17 +670,29 @@
       : "nenhum perfil encontrado";
 
     const scanNote = defender.ScanInProgress
-      ? "Varredura completa em andamento agora."
+      ? `Varredura ${escapeHtml(defender.ScanKind || "")} em andamento` +
+        (defender.ScanElapsedMinutes >= 0 ? ` há ${formatAge(defender.ScanElapsedMinutes)}` : "") +
+        (defender.ScanStartedAt ? `, desde ${escapeHtml(defender.ScanStartedAt)}` : "") +
+        (defender.ScanSource ? ` (detectada por ${escapeHtml(defender.ScanSource)}).` : ".") +
+        " Os campos de última varredura do provedor seguem descrevendo a anterior até esta terminar."
       : defender.NextScheduledScan
         ? `Próxima varredura completa: ${escapeHtml(defender.NextScheduledScan)}` +
           (defender.MinutesUntilNextScan >= 0
-            ? ` (em ${formatAge(defender.MinutesUntilNextScan)})`
-            : "")
+            ? ` (em ${formatAge(defender.MinutesUntilNextScan)}).`
+            : ".")
         : "Sem agenda de varredura completa legível.";
     const idleNote = defender.ScanOnlyIfIdle
       ? "A política espera a máquina ficar ociosa."
       : "A política não espera a máquina ficar ociosa.";
-    byId("exclusion-schedule").textContent = `${scanNote} ${idleNote}`;
+    // Assinatura velha muda o significado de tudo o mais nesta seção: uma
+    // varredura pesada com definição defasada custa o mesmo e protege menos.
+    const signatureNote =
+      defender.SignatureAgeDays === null || defender.SignatureAgeDays === undefined
+        ? ""
+        : ` Assinaturas com ${formatNumber(defender.SignatureAgeDays, 0)} dia(s)` +
+          (defender.SignatureUpdatedAt ? `, de ${escapeHtml(defender.SignatureUpdatedAt)}` : "") +
+          (defender.SignatureAgeDays >= 7 ? " — fora do esperado para atualização diária." : ".");
+    byId("exclusion-schedule").textContent = `${scanNote} ${idleNote}${signatureNote}`;
 
     grid.innerHTML = homes
       .map(
@@ -696,6 +708,71 @@
                 : "sem exclusão de caminho nem de processo"
             }</small>
             <small class="exclusion-source">origem: ${escapeHtml(home.Source)}</small>
+          </article>
+        `
+      )
+      .join("");
+  }
+
+  function renderScanCost(snapshot) {
+    const cost = snapshot.ScanCost;
+    const processList = byId("scancost-processes");
+    const pathList = byId("scancost-paths");
+    if (!processList || !pathList) {
+      return;
+    }
+
+    if (!cost || cost.Available !== true) {
+      byId("scancost-count").textContent = "sem leitura";
+      byId("scancost-note").textContent =
+        (cost && cost.Detail) ||
+        "Nada medido ainda: a leitura só acontece com o motor do antimalware trabalhando.";
+      processList.innerHTML = "";
+      pathList.innerHTML = "";
+      return;
+    }
+
+    byId("scancost-count").textContent = `${formatNumber(cost.TotalSeconds, 0)} s medidos`;
+    byId("scancost-note").textContent =
+      `Janela desde ${escapeHtml(cost.WindowStart)}, ${cost.Samples} registro(s)` +
+      (cost.MeasuredAt ? `, lido em ${escapeHtml(cost.MeasuredAt)}.` : ".");
+
+    processList.innerHTML = (cost.Processes || [])
+      .map(
+        (item) => `
+          <article class="scancost-item" data-level="${item.ExcludedProcess ? 0 : 2}">
+            <div class="exclusion-item-head">
+              <strong>${escapeHtml(item.Name)}</strong>
+              <span>${formatNumber(item.Seconds, 0)} s</span>
+            </div>
+            <small>${formatNumber(item.Files, 0)} arquivo(s) · impacto máx ${item.MaxImpact}%</small>
+            <small class="exclusion-source">${
+              item.ExcludedProcess ? "processo já excluído" : "processo sem exclusão declarada"
+            }</small>
+          </article>
+        `
+      )
+      .join("");
+
+    pathList.innerHTML = (cost.Paths || [])
+      .map(
+        (item) => `
+          <article class="scancost-item" data-level="${item.Covered ? 0 : 3}">
+            <div class="exclusion-item-head">
+              <strong>${escapeHtml(item.Label)}</strong>
+              <span>${formatNumber(item.Seconds, 0)} s</span>
+            </div>
+            <small>${item.Covered ? "coberto por exclusão" : "exposto à varredura"}${
+              item.Category ? ` · ${escapeHtml(item.Category)}` : ""
+            }</small>
+            ${
+              item.Suggestion
+                ? `<small class="scancost-suggestion">padrão sugerido: <code>${escapeHtml(
+                    item.Suggestion
+                  )}</code></small>`
+                : ""
+            }
+            ${item.Rationale ? `<small class="exclusion-source">${escapeHtml(item.Rationale)}</small>` : ""}
           </article>
         `
       )
@@ -1034,6 +1111,7 @@
     renderInsights(snapshot);
     renderSampleContext(snapshot);
     renderExclusions(snapshot);
+    renderScanCost(snapshot);
     renderCapabilities(snapshot);
     renderConsumers();
   }

@@ -548,6 +548,11 @@ function New-PressureMonitorState {
         [ValidateRange(15, 3600)]
         [int]$DefenderRefreshSeconds = 60,
 
+        # Ler o log do antimalware custa mais que uma amostra comum, e a resposta
+        # muda devagar. Só vale reler quando o motor está de fato trabalhando.
+        [ValidateRange(60, 86400)]
+        [int]$ScanCostRefreshSeconds = 600,
+
         [ValidateRange(2, 600)]
         [int]$MaxRefreshSeconds = 30,
 
@@ -610,6 +615,11 @@ function New-PressureMonitorState {
         DefenderRefreshAt = [datetime]::MinValue
         DefenderStatus = $null
         DefenderPreference = $null
+        DefenderScanProcess = $null
+        ScanCost = $null
+        ScanCostRefreshAt = [datetime]::MinValue
+        ScanCostRefreshSeconds = $ScanCostRefreshSeconds
+        ScanCostEngineThreshold = 10
         CliHomeRoots = @(
             Get-PressureCliHomeRoots `
                 -ExplicitRoot $CliHomeRoots `
@@ -2755,6 +2765,610 @@ function Get-PressureToolchainExclusionGaps {
     return @($gaps)
 }
 
+function Get-PressureMpLogPath {
+    <#
+    .SYNOPSIS
+    Encontra o log de suporte mais recente do antimalware.
+
+    .DESCRIPTION
+    O diretório exige privilégio administrativo para leitura. Sem ele a função
+    devolve vazio, e o painel segue sem o ranking em vez de falhar.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$Directory = ''
+    )
+
+    $resolved = if ([string]::IsNullOrWhiteSpace($Directory)) {
+        Join-Path $env:ProgramData 'Microsoft\Windows Defender\Support'
+    } else {
+        $Directory
+    }
+
+    try {
+        $newest = Get-ChildItem -LiteralPath $resolved -Filter 'MPLog-*.log' -ErrorAction Stop |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+        if ($null -eq $newest) {
+            return ''
+        }
+        return $newest.FullName
+    } catch {
+        return ''
+    }
+}
+
+function ConvertTo-PressureDisplayPath {
+    <#
+    .SYNOPSIS
+    Reduz um caminho a uma forma que não revela a conta do usuário.
+
+    .DESCRIPTION
+    O ranking só serve se disser onde dói, mas o painel não expõe caminho
+    completo. Trocar o diretório do usuário pela variável preserva a informação
+    útil sem publicar o nome da conta.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return ''
+    }
+
+    $userProfile = [string]$env:USERPROFILE
+    if (
+        -not [string]::IsNullOrWhiteSpace($userProfile) -and
+        $Path.StartsWith($userProfile, [StringComparison]::OrdinalIgnoreCase)
+    ) {
+        return '%USERPROFILE%' + $Path.Substring($userProfile.Length)
+    }
+    return $Path
+}
+
+function ConvertFrom-PressureMpLog {
+    <#
+    .SYNOPSIS
+    Extrai do log do antimalware o custo de varredura por processo.
+
+    .DESCRIPTION
+    O provedor não informa qual arquivo está sendo varrido. O próprio motor,
+    porém, registra periodicamente quanto tempo gastou por processo e qual foi o
+    arquivo mais caro de cada um. É a medição dele, não uma inferência nossa.
+
+    Os carimbos do log estão em UTC. O log é lido pela cauda: ele é acrescido no
+    fim, e reler megabytes a cada ciclo custaria mais que a informação vale.
+    #>
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$LogPath = '',
+
+        # Injetável para teste; vazio lê o arquivo.
+        [string[]]$Line = $null,
+
+        [int]$TailLines = 4000,
+
+        [datetime]$Since = [datetime]::MinValue
+    )
+
+    $lines = if ($null -ne $Line) {
+        @($Line)
+    } elseif (-not [string]::IsNullOrWhiteSpace($LogPath)) {
+        try {
+            @(Get-Content -LiteralPath $LogPath -Tail $TailLines -Encoding Unicode -ErrorAction Stop)
+        } catch {
+            @()
+        }
+    } else {
+        @()
+    }
+
+    $pattern = [regex](
+        '^(?<t>\S+)\s+ProcessImageName:\s(?<proc>[^,]+),\sPid:\s(?<pid>\d+),' +
+        '\sTotalTime:\s(?<tt>\d+),\sCount:\s(?<cnt>\d+),\sMaxTime:\s\d+,' +
+        '\sMaxTimeFile:\s(?<file>.*?),\sEstimatedImpact:\s(?<imp>\d+)%'
+    )
+    $sinceUtc = if ($Since -eq [datetime]::MinValue) {
+        [datetime]::MinValue
+    } else {
+        $Since.ToUniversalTime()
+    }
+
+    return @(
+        foreach ($current in $lines) {
+            $match = $pattern.Match([string]$current)
+            if (-not $match.Success) {
+                continue
+            }
+
+            $stamp = [datetime]::MinValue
+            if (-not [datetime]::TryParse(
+                $match.Groups['t'].Value,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::AssumeUniversal -bor
+                    [Globalization.DateTimeStyles]::AdjustToUniversal,
+                [ref]$stamp
+            )) {
+                continue
+            }
+            if ($stamp -lt $sinceUtc) {
+                continue
+            }
+
+            # O log nomeia o volume pelo dispositivo, e o sufixo ->(...) descreve
+            # o conteúdo interno inspecionado, não outro arquivo.
+            $file = $match.Groups['file'].Value -replace '->\(.*$', ''
+
+            [pscustomobject]@{
+                At = $stamp.ToLocalTime()
+                Process = $match.Groups['proc'].Value
+                ProcessId = [int]$match.Groups['pid'].Value
+                TotalTimeMs = [int]$match.Groups['tt'].Value
+                FileCount = [int]$match.Groups['cnt'].Value
+                DevicePath = $file
+                ImpactPercent = [int]$match.Groups['imp'].Value
+            }
+        }
+    )
+}
+
+function Resolve-PressureDevicePath {
+    <#
+    .SYNOPSIS
+    Traduz `\Device\HarddiskVolumeN\...` para letra de unidade.
+
+    .DESCRIPTION
+    A tradução é feita por tentativa: o caminho relativo é testado nas unidades
+    fixas e a primeira que o contém vence. Evita interoperação com a API do
+    Windows para um ganho que não justifica o risco, e degrada devolvendo o
+    caminho original quando nada casa.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Path,
+        [string[]]$DriveRoot = @()
+    )
+
+    if ($Path -notmatch '^\\Device\\HarddiskVolume\d+\\(?<rest>.*)$') {
+        return $Path
+    }
+
+    $rest = $matches['rest']
+    $roots = if (@($DriveRoot).Count -gt 0) {
+        @($DriveRoot)
+    } else {
+        @(
+            Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType = 3' -ErrorAction SilentlyContinue |
+                ForEach-Object { "$($_.DeviceID)\" }
+        )
+    }
+
+    foreach ($root in $roots) {
+        $candidate = Join-Path $root $rest
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $systemRoot = [IO.Path]::GetPathRoot([string]$env:SystemRoot)
+    if (-not [string]::IsNullOrWhiteSpace($systemRoot)) {
+        return (Join-Path $systemRoot $rest)
+    }
+    return $Path
+}
+
+function Get-PressureGenericPrefix {
+    <#
+    .SYNOPSIS
+    Monta o prefixo de um padrão trocando o segmento da conta por curinga.
+
+    .DESCRIPTION
+    O diretório imediatamente acima do conteúdo identificado costuma ser a conta
+    do usuário — em `Users` ou em qualquer raiz de perfis que a organização
+    tenha adotado. Trocá-lo por curinga é o que faz o padrão valer para a
+    próxima estação e para o próximo colaborador, em vez de descrever uma
+    máquina.
+
+    Conteúdo logo abaixo da raiz da unidade não tem segmento de conta para
+    generalizar, e o prefixo sai inteiro.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string[]]$Part,
+        [Parameter(Mandatory)][int]$AnchorIndex
+    )
+
+    # Um único segmento entre a unidade e o conteúdo é raiz compartilhada — uma
+    # pasta de repositórios, por exemplo — e generalizá-la produziria um padrão
+    # largo demais. Conta de usuário só aparece a partir do segundo nível.
+    if ($AnchorIndex -le 2) {
+        return (@($Part[0..([math]::Max(0, $AnchorIndex - 1))]) -join '\')
+    }
+
+    $prefixo = @($Part[0..($AnchorIndex - 1)])
+    $prefixo[$prefixo.Count - 1] = '*'
+    return ($prefixo -join '\')
+}
+
+function ConvertTo-PressureExclusionSuggestion {
+    <#
+    .SYNOPSIS
+    Generaliza um caminho observado em padrão de exclusão e categoria.
+
+    .DESCRIPTION
+    Pedir exclusão de caminho literal produz uma decisão por máquina, que não
+    sobrevive a outro usuário, a outra estação nem a um perfil criado depois.
+    Política de antimalware é definida por padrão, então a recomendação sai por
+    padrão: o segmento da conta vira curinga e o nome específico do perfil vira
+    prefixo.
+
+    A categoria acompanha o padrão porque quem avalia risco decide por classe de
+    conteúdo — estado de ferramenta, cache restaurável, artefato de build — e não
+    por pasta isolada.
+
+    Caminho fora das famílias conhecidas volta sem sugestão: inventar um padrão
+    largo para conteúdo desconhecido seria pior que não sugerir nada.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+
+    $vazio = [pscustomobject]@{ Pattern = ''; Category = ''; Rationale = '' }
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $vazio
+    }
+
+    $parts = @($Path -split '\\' | Where-Object { $_ -ne '' })
+    if ($parts.Count -lt 2) {
+        return $vazio
+    }
+    $drive = $parts[0]
+
+    # Diretório de estado de CLI de IA, sob a conta do usuário ou fora dela.
+    $cliIndex = -1
+    for ($i = 1; $i -lt $parts.Count; $i++) {
+        if ($parts[$i] -match '^\.(claude|codex|gemini|grok)') {
+            $cliIndex = $i
+            break
+        }
+    }
+    if ($cliIndex -ge 0) {
+        $family = ($parts[$cliIndex] -split '-')[0]
+        return [pscustomobject]@{
+            Pattern = (Get-PressureGenericPrefix -Part $parts -AnchorIndex $cliIndex) + "\$family*"
+            Category = 'estado de CLI de IA'
+            Rationale = 'Diretório de estado da ferramenta, reescrito continuamente durante o uso. O curinga cobre perfis isolados existentes e futuros.'
+        }
+    }
+
+    # Caches de dependência: restauráveis, alto volume, baixo valor forense.
+    if ($Path -match '(?i)\\(\.nuget|\.m2|\.gradle|\.cargo|node_modules|\.pnpm-store|\.npm|\.yarn)(\\|$)') {
+        $token = $matches[1]
+        $cacheIndex = -1
+        for ($i = 1; $i -lt $parts.Count; $i++) {
+            if ($parts[$i] -ieq $token) {
+                $cacheIndex = $i
+                break
+            }
+        }
+        $sufixo = if ($token -ieq '.nuget') { "\$token\packages" } else { "\$token" }
+        return [pscustomobject]@{
+            Pattern = (Get-PressureGenericPrefix -Part $parts -AnchorIndex $cacheIndex) + $sufixo
+            Category = 'cache de dependência'
+            Rationale = 'Conteúdo restaurável a partir do repositório de pacotes, com o mesmo perfil de risco de caches já excluídos.'
+        }
+    }
+
+    if ($Path -match '(?i)(dev-cache|\\uv\\|\\pip\\cache|\\Temp\\)') {
+        return [pscustomobject]@{
+            Pattern = (@($parts[0..([math]::Min(1, $parts.Count - 1))]) -join '\') + '\*'
+            Category = 'cache de ferramenta'
+            Rationale = 'Área de trabalho temporária de ferramenta de build, recriada sob demanda.'
+        }
+    }
+
+    if ($Path -match '(?i)\\(bin|obj|target|dist|\.vs|\.gradle)(\\|$)') {
+        return [pscustomobject]@{
+            Pattern = ''
+            Category = 'artefato de build'
+            Rationale = 'Saída de compilação. A prática usual é excluir por processo de build, não por caminho de projeto.'
+        }
+    }
+
+    if ($Path -match '(?i)^\w:\\Windows(\\|$)') {
+        return [pscustomobject]@{
+            Pattern = ''
+            Category = 'componente do sistema'
+            Rationale = 'Caminho do sistema operacional. Não é candidato a exclusão; o custo aqui indica atividade de build ou de runtime, não conteúdo a isentar.'
+        }
+    }
+
+    return $vazio
+}
+
+function Get-PressureScanCost {
+    <#
+    .SYNOPSIS
+    Ranqueia processos e diretórios pelo tempo que o antimalware gastou neles.
+
+    .DESCRIPTION
+    Responde "o que está sendo varrido" com a contabilidade do próprio motor,
+    e cruza cada diretório com as exclusões declaradas: custo alto em caminho
+    já excluído significa outra causa, custo alto em caminho exposto é um
+    candidato objetivo para um chamado.
+
+    Os números são amostrados pelo antimalware em intervalos próprios, então
+    valem como ordem de grandeza e ranking, não como auditoria de arquivos.
+    #>
+    [CmdletBinding()]
+    param(
+        [object[]]$Record = @(),
+        [string[]]$ExclusionPath = @(),
+        [string[]]$ExclusionProcess = @(),
+        [int]$Top = 6,
+        [int]$DirectoryDepth = 5,
+        [string[]]$DriveRoot = @()
+    )
+
+    # O log emite blocos periódicos com contadores ACUMULADOS por processo, não
+    # incrementos: o mesmo PID reaparece a cada bloco com o mesmo TotalTime, e
+    # somar registros multiplicaria o custo pelo número de blocos na janela.
+    # A leitura correta é uma linha por PID, a mais recente.
+    $records = @(
+        @($Record) |
+            Group-Object ProcessId, Process |
+            ForEach-Object {
+                @($_.Group | Sort-Object TotalTimeMs -Descending)[0]
+            }
+    )
+    if ($records.Count -eq 0) {
+        return [pscustomobject]@{
+            Available = $false
+            Samples = 0
+            WindowStart = $null
+            TotalSeconds = 0
+            Processes = @()
+            Paths = @()
+        }
+    }
+
+    $byProcess = @(
+        $records |
+            Group-Object Process |
+            ForEach-Object {
+                $name = [string]$_.Name
+                [pscustomobject]@{
+                    Name = $name
+                    Seconds = [math]::Round((($_.Group | Measure-Object TotalTimeMs -Sum).Sum) / 1000, 1)
+                    Files = [int](($_.Group | Measure-Object FileCount -Sum).Sum)
+                    MaxImpact = [int](($_.Group | Measure-Object ImpactPercent -Maximum).Maximum)
+                    ExcludedProcess = ($ExclusionProcess -contains $name)
+                }
+            } |
+            Sort-Object Seconds -Descending |
+            Select-Object -First $Top
+    )
+
+    # As unidades são resolvidas uma vez por execução. Consultar o provedor por
+    # registro custava mais que toda a agregação junta.
+    $roots = if (@($DriveRoot).Count -gt 0) {
+        @($DriveRoot)
+    } else {
+        @(
+            Get-CimInstance -ClassName Win32_LogicalDisk -Filter 'DriveType = 3' -ErrorAction SilentlyContinue |
+                ForEach-Object { "$($_.DeviceID)\" }
+        )
+    }
+    # O que muda entre registros é o arquivo, não o volume. Resolver por
+    # dispositivo e não por caminho troca centenas de acessos ao disco por um
+    # punhado — diferença que pesa justamente quando a máquina já está sob
+    # varredura, que é quando esta função roda.
+    $deviceMap = @{}
+
+    $byPath = @(
+        $records |
+            ForEach-Object {
+                $devicePath = [string]$_.DevicePath
+                $full = $devicePath
+                if ($devicePath -match '^(?<dev>\\Device\\HarddiskVolume\d+)\\') {
+                    $device = $matches['dev']
+                    if (-not $deviceMap.ContainsKey($device)) {
+                        $resolved = Resolve-PressureDevicePath -Path $devicePath -DriveRoot $roots
+                        # Guarda apenas a raiz descoberta, para reaproveitar em
+                        # todos os demais caminhos do mesmo volume.
+                        $sufixo = $devicePath.Substring($device.Length).TrimStart('\')
+                        $deviceMap[$device] = if (
+                            -not [string]::IsNullOrWhiteSpace($sufixo) -and
+                            $resolved.EndsWith($sufixo, [StringComparison]::OrdinalIgnoreCase)
+                        ) {
+                            $resolved.Substring(0, $resolved.Length - $sufixo.Length).TrimEnd('\')
+                        } else {
+                            ''
+                        }
+                    }
+                    $raiz = [string]$deviceMap[$device]
+                    if (-not [string]::IsNullOrWhiteSpace($raiz)) {
+                        $full = $raiz + $devicePath.Substring($device.Length)
+                    }
+                }
+                $parts = @($full -split '\\')
+                $take = [math]::Min($DirectoryDepth, [math]::Max(2, $parts.Count - 1))
+                [pscustomobject]@{
+                    Directory = ($parts[0..($take - 1)] -join '\')
+                    TotalTimeMs = $_.TotalTimeMs
+                }
+            } |
+            Group-Object Directory |
+            ForEach-Object {
+                $directory = [string]$_.Name
+                $coverage = Test-PressureExclusionCoverage `
+                    -Path $directory `
+                    -ExclusionPath $ExclusionPath
+                $suggestion = ConvertTo-PressureExclusionSuggestion -Path $directory
+                [pscustomobject]@{
+                    Label = ConvertTo-PressureDisplayPath -Path $directory
+                    Seconds = [math]::Round((($_.Group | Measure-Object TotalTimeMs -Sum).Sum) / 1000, 1)
+                    Events = $_.Count
+                    Covered = [bool]$coverage.Covered
+                    # Recomendação sempre por padrão, nunca por caminho literal:
+                    # política de antimalware é definida por classe de conteúdo.
+                    Suggestion = $suggestion.Pattern
+                    Category = $suggestion.Category
+                    Rationale = $suggestion.Rationale
+                }
+            } |
+            Sort-Object Seconds -Descending |
+            Select-Object -First $Top
+    )
+
+    return [pscustomobject]@{
+        Available = $true
+        # Processos distintos considerados, já sem a repetição entre blocos.
+        Samples = $records.Count
+        WindowStart = (($records | Measure-Object At -Minimum).Minimum).ToString('yyyy-MM-dd HH:mm')
+        TotalSeconds = [math]::Round((($records | Measure-Object TotalTimeMs -Sum).Sum) / 1000, 1)
+        Processes = $byProcess
+        Paths = $byPath
+    }
+}
+
+function Update-PressureScanCostCache {
+    <#
+    .SYNOPSIS
+    Recalcula o ranking de custo de varredura sob condição e com cache.
+
+    .DESCRIPTION
+    Duas travas de custo, porque a resposta não vale qualquer preço:
+
+    1. só recalcula quando há varredura em andamento ou o motor está de fato
+       consumindo CPU. Máquina tranquila não paga por um ranking que diria
+       apenas que nada está acontecendo;
+    2. entre recálculos vale o cache. O ranking descreve minutos de trabalho
+       acumulado e não muda de forma útil a cada ciclo do painel.
+
+    Sem privilégio para ler o log, devolve indisponível em silêncio: é um
+    detalhe a mais, não um requisito do painel.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)]$Defender,
+        [datetime]$Now = (Get-Date)
+    )
+
+    $engineBusy = (
+        $Defender.ScanInProgress -eq $true -or
+        [double]$Defender.EngineCpuPercent -ge [double]$State.ScanCostEngineThreshold
+    )
+    if (-not $engineBusy) {
+        # Preserva a última leitura: saber o que doeu no episódio anterior
+        # continua útil depois que ele passa.
+        return $State.ScanCost
+    }
+    if ($Now -lt $State.ScanCostRefreshAt -and $null -ne $State.ScanCost) {
+        return $State.ScanCost
+    }
+
+    $logPath = Get-PressureMpLogPath
+    if ([string]::IsNullOrWhiteSpace($logPath)) {
+        $State.ScanCost = [pscustomobject]@{
+            Available = $false
+            Detail = 'Log do antimalware indisponível: leitura exige privilégio administrativo.'
+            Samples = 0
+            WindowStart = $null
+            TotalSeconds = 0
+            Processes = @()
+            Paths = @()
+        }
+        $State.ScanCostRefreshAt = $Now.AddSeconds($State.ScanCostRefreshSeconds)
+        return $State.ScanCost
+    }
+
+    $records = @(
+        ConvertFrom-PressureMpLog -LogPath $logPath -Since $Now.AddHours(-2)
+    )
+    $cost = Get-PressureScanCost `
+        -Record $records `
+        -ExclusionPath @(
+            if ($null -ne $State.DefenderPreference) { $State.DefenderPreference.ExclusionPath } else { @() }
+        ) `
+        -ExclusionProcess @(
+            if ($null -ne $State.DefenderPreference) { $State.DefenderPreference.ExclusionProcess } else { @() }
+        )
+
+    $State.ScanCost = $cost |
+        Add-Member -NotePropertyName MeasuredAt -NotePropertyValue $Now.ToString('yyyy-MM-dd HH:mm') -PassThru
+    $State.ScanCostRefreshAt = $Now.AddSeconds($State.ScanCostRefreshSeconds)
+    return $State.ScanCost
+}
+
+function Get-PressureScanProcess {
+    <#
+    .SYNOPSIS
+    Detecta varredura agendada ou sob demanda em execução.
+
+    .DESCRIPTION
+    `FullScanStartTime` e `FullScanEndTime` só descrevem a varredura anterior:
+    o provedor os atualiza quando ela termina. Comparar um com o outro responde
+    "nada em andamento" justamente enquanto o motor consome a máquina, que é o
+    momento em que a resposta importa.
+
+    O processo de varredura é o sinal direto. `MpCmdRun.exe` também executa
+    atualização de assinatura e outras tarefas, então quem decide é a linha de
+    comando, não a mera presença do processo.
+
+    Somente leitura: nenhuma varredura é iniciada, interrompida ou alterada.
+    #>
+    [CmdletBinding()]
+    param(
+        # Injetável para teste; vazio consulta a máquina.
+        [object[]]$Process = $null
+    )
+
+    $candidates = if ($null -ne $Process) {
+        @($Process)
+    } else {
+        try {
+            @(Get-CimInstance -ClassName Win32_Process -Filter "Name='MpCmdRun.exe'" -ErrorAction Stop)
+        } catch {
+            @()
+        }
+    }
+
+    foreach ($candidate in $candidates) {
+        $commandLine = [string]$candidate.CommandLine
+        if ($commandLine -notmatch '(?i)(^|\s)Scan(\s|$)') {
+            continue
+        }
+
+        $startedAt = $null
+        if ($null -ne $candidate.CreationDate) {
+            try {
+                $startedAt = [datetime]$candidate.CreationDate
+            } catch {
+                $startedAt = $null
+            }
+        }
+        $scheduled = $commandLine -match '(?i)-ScheduleJob'
+
+        return [pscustomobject]@{
+            Active = $true
+            ProcessId = [uint32]$candidate.ProcessId
+            StartedAt = $startedAt
+            Scheduled = $scheduled
+            Kind = if ($scheduled) { 'agendada' } else { 'sob demanda' }
+        }
+    }
+
+    return [pscustomobject]@{
+        Active = $false
+        ProcessId = [uint32]0
+        StartedAt = $null
+        Scheduled = $false
+        Kind = ''
+    }
+}
+
 function Get-PressureDefenderState {
     <#
     .SYNOPSIS
@@ -2774,6 +3388,7 @@ function Get-PressureDefenderState {
         [double]$EngineIoMBps = 0,
         [double]$EngineCpuPercent = 0,
         [object[]]$CliHomes = @(),
+        $ScanProcess = $null,
         [datetime]$Now = (Get-Date)
     )
 
@@ -2784,6 +3399,11 @@ function Get-PressureDefenderState {
             RealtimeEnabled = $null
             ScanInProgress = $false
             ScanStartedAt = $null
+            ScanSource = ''
+            ScanKind = ''
+            SignatureUpdatedAt = $null
+            SignatureAgeDays = $null
+            SignatureVersion = ''
             LastFullScanEnd = $null
             ScheduleDay = $null
             ScheduleDayName = ''
@@ -2801,13 +3421,42 @@ function Get-PressureDefenderState {
 
     $fullScanStart = if ($null -ne $Status) { $Status.FullScanStartTime } else { $null }
     $fullScanEnd = if ($null -ne $Status) { $Status.FullScanEndTime } else { $null }
-    $scanInProgress = (
+    # Os campos descrevem a varredura anterior enquanto a atual roda, então
+    # sozinhos eles nao detectam nada em andamento. O processo de varredura
+    # complementa: basta um dos dois sinais para declarar varredura ativa.
+    $fieldsIndicateScan = (
         $null -ne $fullScanStart -and
         (
             $null -eq $fullScanEnd -or
             [datetime]$fullScanStart -gt [datetime]$fullScanEnd
         )
     )
+    $scanProcessActive = ($null -ne $ScanProcess -and $ScanProcess.Active -eq $true)
+    $scanInProgress = ($fieldsIndicateScan -or $scanProcessActive)
+    $scanSource = if ($scanProcessActive) {
+        'processo de varredura'
+    } elseif ($fieldsIndicateScan) {
+        'campos do provedor'
+    } else {
+        ''
+    }
+    $scanStartedAt = if ($scanProcessActive -and $null -ne $ScanProcess.StartedAt) {
+        ([datetime]$ScanProcess.StartedAt)
+    } elseif ($fieldsIndicateScan -and $null -ne $fullScanStart) {
+        ([datetime]$fullScanStart)
+    } else {
+        $null
+    }
+
+    $signatureUpdatedAt = if (
+        $null -ne $Status -and
+        $Status.PSObject.Properties.Name -contains 'AntivirusSignatureLastUpdated' -and
+        $null -ne $Status.AntivirusSignatureLastUpdated
+    ) {
+        [datetime]$Status.AntivirusSignatureLastUpdated
+    } else {
+        $null
+    }
 
     $scheduleDay = if ($null -ne $Preference -and $null -ne $Preference.ScanScheduleDay) {
         [int]$Preference.ScanScheduleDay
@@ -2857,10 +3506,37 @@ function Get-PressureDefenderState {
             $null
         }
         ScanInProgress = $scanInProgress
-        ScanStartedAt = if ($scanInProgress -and $null -ne $fullScanStart) {
-            ([datetime]$fullScanStart).ToString('yyyy-MM-dd HH:mm')
+        ScanStartedAt = if ($null -ne $scanStartedAt) {
+            $scanStartedAt.ToString('yyyy-MM-dd HH:mm')
         } else {
             $null
+        }
+        ScanSource = $scanSource
+        ScanKind = if ($scanProcessActive) { [string]$ScanProcess.Kind } else { '' }
+        # Duração é o que o provedor não entrega enquanto a varredura roda: seus
+        # campos seguem descrevendo a anterior até esta terminar.
+        ScanElapsedMinutes = if ($scanInProgress -and $null -ne $scanStartedAt) {
+            [math]::Round(($Now - $scanStartedAt).TotalMinutes, 0)
+        } else {
+            $null
+        }
+        SignatureUpdatedAt = if ($null -ne $signatureUpdatedAt) {
+            $signatureUpdatedAt.ToString('yyyy-MM-dd HH:mm')
+        } else {
+            $null
+        }
+        SignatureAgeDays = if ($null -ne $signatureUpdatedAt) {
+            [math]::Round(($Now - $signatureUpdatedAt).TotalDays, 0)
+        } else {
+            $null
+        }
+        SignatureVersion = if (
+            $null -ne $Status -and
+            $Status.PSObject.Properties.Name -contains 'AntivirusSignatureVersion'
+        ) {
+            [string]$Status.AntivirusSignatureVersion
+        } else {
+            ''
         }
         LastFullScanEnd = if ($null -ne $fullScanEnd) {
             ([datetime]$fullScanEnd).ToString('yyyy-MM-dd HH:mm')
@@ -2937,7 +3613,8 @@ function Update-PressureDefenderConfiguration {
             -ClassName MSFT_MpComputerStatus `
             -ErrorAction Stop |
             Select-Object -First 1 RealTimeProtectionEnabled, FullScanStartTime,
-                FullScanEndTime, QuickScanStartTime, QuickScanEndTime
+                FullScanEndTime, QuickScanStartTime, QuickScanEndTime,
+                AntivirusSignatureLastUpdated, AntivirusSignatureVersion
     } catch {
         $status = $null
     }
@@ -2954,6 +3631,7 @@ function Update-PressureDefenderConfiguration {
 
     $State.DefenderStatus = $status
     $State.DefenderPreference = $preference
+    $State.DefenderScanProcess = Get-PressureScanProcess
     $State.Capabilities.Defender = ($null -ne $status -or $null -ne $preference)
     $State.CliHomes = @(
         Get-PressureCliHomeCandidates `
@@ -3881,7 +4559,8 @@ function Get-PressureSnapshot {
         -Preference $State.DefenderPreference `
         -EngineIoMBps ([double](($antimalwareProcesses | Measure-Object IoTotalMBps -Sum).Sum)) `
         -EngineCpuPercent ([double](($antimalwareProcesses | Measure-Object CpuPercent -Sum).Sum)) `
-        -CliHomes @($State.CliHomes)
+        -CliHomes @($State.CliHomes) `
+        -ScanProcess $State.DefenderScanProcess
     $baseInsights = Get-PressureInsights `
         -Assessment $assessment `
         -Metrics $metrics `
@@ -3964,6 +4643,7 @@ function Get-PressureSnapshot {
         CliSessions = @($cliSessions)
         Insights = @($insights)
         Defender = $defender
+        ScanCost = (Update-PressureScanCostCache -State $State -Defender $defender)
         PhysicalDisks = $physicalDisks
         Volumes = @($State.DiskCapacities)
         Capabilities = Get-PressureCapabilities -State $State

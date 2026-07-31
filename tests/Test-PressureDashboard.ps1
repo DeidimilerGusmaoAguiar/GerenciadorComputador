@@ -462,6 +462,19 @@ foreach ($exclusionUiMarker in @(
 Assert-PressureCondition `
     -Condition $javaScriptContent.Contains('renderExclusions') `
     -Message 'JavaScript deve renderizar a exposicao dos perfis de CLI'
+foreach ($scanCostUiMarker in @(
+    'scancost-processes',
+    'scancost-paths',
+    'O que está sendo varrido',
+    'padrão genérico'
+)) {
+    Assert-PressureCondition `
+        -Condition $htmlContent.Contains($scanCostUiMarker) `
+        -Message "HTML deve mostrar o custo de varredura: $scanCostUiMarker"
+}
+Assert-PressureCondition `
+    -Condition $javaScriptContent.Contains('renderScanCost') `
+    -Message 'JavaScript deve renderizar o ranking de custo de varredura'
 foreach ($areaScriptMarker in @(
     'activateArea',
     'areaOrder',
@@ -1025,6 +1038,197 @@ Assert-PressureCondition `
 Assert-PressureCondition `
     -Condition (@($scanningState.ToolchainGaps).Count -eq 3) `
     -Message 'Estado do antimalware deve carregar as lacunas de exclusao'
+
+# --- custo de varredura lido do log do antimalware ---
+# Linhas no formato real do MPLog, com carimbo em UTC e caminho por dispositivo.
+$linhasMpLog = @(
+    '2026-07-30T21:00:00.100 ProcessImageName: claude.exe, Pid: 100, TotalTime: 120000, Count: 5000, MaxTime: 78, MaxTimeFile: \Device\HarddiskVolume3\perfis\ana\.claude-pessoal\projects\sessao.jsonl, EstimatedImpact: 90%'
+    '2026-07-30T21:00:01.100 ProcessImageName: node.exe, Pid: 200, TotalTime: 3000, Count: 400, MaxTime: 12, MaxTimeFile: \Device\HarddiskVolume3\perfis\ana\.nuget\packages\pacote\lib.dll->(UTF-8), EstimatedImpact: 20%'
+    # Tres dias antes: a distancia evita que a conversao para UTC mude o
+    # resultado do teste conforme o fuso da maquina que o executa.
+    '2026-07-27T21:00:00.100 ProcessImageName: antigo.exe, Pid: 300, TotalTime: 999999, Count: 1, MaxTime: 1, MaxTimeFile: \Device\HarddiskVolume3\perfis\ana\antigo\a.txt, EstimatedImpact: 5%'
+    'linha irrelevante que nao casa com o padrao'
+)
+$registros = @(
+    ConvertFrom-PressureMpLog -Line $linhasMpLog -Since ([datetime]'2026-07-26T00:00:00')
+)
+Assert-PressureCondition `
+    -Condition (@($registros).Count -eq 3) `
+    -Message 'Parser do log deve ignorar linha fora do padrao e manter as demais'
+Assert-PressureCondition `
+    -Condition (@($registros | Where-Object { $_.Process -eq 'claude.exe' }).FileCount -eq 5000) `
+    -Message 'Parser deve preservar a contagem de arquivos por processo'
+Assert-PressureCondition `
+    -Condition (@($registros | Where-Object { $_.DevicePath -like '*lib.dll' }).Count -eq 1) `
+    -Message 'Sufixo ->(...) descreve conteudo interno e nao pode virar outro arquivo'
+
+# O corte por horario evita reprocessar o log inteiro a cada leitura.
+$recorte = @(ConvertFrom-PressureMpLog -Line $linhasMpLog -Since ([datetime]'2026-07-29T00:00:00'))
+Assert-PressureCondition `
+    -Condition (@($recorte).Count -eq 2 -and -not (@($recorte).Process -contains 'antigo.exe')) `
+    -Message 'Registro anterior a janela solicitada deve ficar de fora'
+
+# Recomendacao sempre por padrao generico: politica de antimalware nao se
+# define por caminho de uma maquina.
+$sugestoes = @(
+    @{ Caminho = 'D:\perfis\ana\.claude-pessoal\projects'; Padrao = 'D:\perfis\*\.claude*'; Categoria = 'estado de CLI de IA' }
+    @{ Caminho = 'D:\perfis\ana\.codex'; Padrao = 'D:\perfis\*\.codex*'; Categoria = 'estado de CLI de IA' }
+    @{ Caminho = 'D:\repos\.claude-equipe\projects'; Padrao = 'D:\repos\.claude*'; Categoria = 'estado de CLI de IA' }
+    @{ Caminho = 'D:\perfis\ana\.nuget\packages'; Padrao = 'D:\perfis\*\.nuget\packages'; Categoria = 'cache de dependência' }
+)
+foreach ($caso in $sugestoes) {
+    $s = ConvertTo-PressureExclusionSuggestion -Path $caso.Caminho
+    Assert-PressureCondition `
+        -Condition ($s.Pattern -eq $caso.Padrao -and $s.Category -eq $caso.Categoria) `
+        -Message "Sugestao generica esperada para $($caso.Caminho): $($caso.Padrao)"
+    # O segmento da conta precisa virar curinga em qualquer raiz, nao apenas
+    # sob Users: raiz de perfis e decisao de cada organizacao.
+    Assert-PressureCondition `
+        -Condition ($s.Pattern -notmatch '(?i)\\ana(\\|$)') `
+        -Message 'Sugestao nao pode carregar o nome da conta observada'
+}
+$sistema = ConvertTo-PressureExclusionSuggestion -Path 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319'
+Assert-PressureCondition `
+    -Condition ($sistema.Pattern -eq '' -and $sistema.Category -eq 'componente do sistema') `
+    -Message 'Caminho do sistema deve ser classificado sem virar candidato a exclusao'
+Assert-PressureCondition `
+    -Condition ((ConvertTo-PressureExclusionSuggestion -Path 'C:\Dados\planilhas').Pattern -eq '') `
+    -Message 'Conteudo desconhecido nao pode receber padrao inventado'
+
+# O log repete o mesmo PID a cada bloco, com contador acumulado. Somar blocos
+# multiplicaria o custo pelo numero de leituras na janela — foi o defeito
+# observado em 31/07/2026, com o mesmo PID exibindo TotalTime identico em seis
+# blocos consecutivos.
+$blocosRepetidos = @(
+    ConvertFrom-PressureMpLog -Line @(
+        '2026-07-30T21:00:00.100 ProcessImageName: claude.exe, Pid: 100, TotalTime: 120000, Count: 5000, MaxTime: 78, MaxTimeFile: \Device\HarddiskVolume3\perfis\ana\.claude-pessoal\projects\sessao.jsonl, EstimatedImpact: 90%'
+        '2026-07-30T23:00:00.100 ProcessImageName: claude.exe, Pid: 100, TotalTime: 120000, Count: 5000, MaxTime: 78, MaxTimeFile: \Device\HarddiskVolume3\perfis\ana\.claude-pessoal\projects\sessao.jsonl, EstimatedImpact: 90%'
+        '2026-07-31T01:00:00.100 ProcessImageName: claude.exe, Pid: 100, TotalTime: 132000, Count: 5400, MaxTime: 78, MaxTimeFile: \Device\HarddiskVolume3\perfis\ana\.claude-pessoal\projects\sessao.jsonl, EstimatedImpact: 90%'
+    ) -Since ([datetime]'2026-07-26T00:00:00')
+)
+$custoRepetido = Get-PressureScanCost -Record $blocosRepetidos -DriveRoot @('C:\')
+Assert-PressureCondition `
+    -Condition ($custoRepetido.Samples -eq 1) `
+    -Message 'Mesmo PID em blocos distintos deve contar como um processo, nao varios'
+Assert-PressureCondition `
+    -Condition ((@($custoRepetido.Processes) | Where-Object { $_.Name -eq 'claude.exe' }).Seconds -eq 132) `
+    -Message 'Contador acumulado deve valer pelo maior valor, nao pela soma dos blocos'
+Assert-PressureCondition `
+    -Condition ((@($custoRepetido.Processes) | Where-Object { $_.Name -eq 'claude.exe' }).Files -eq 5400) `
+    -Message 'Contagem de arquivos tambem e acumulada e nao pode ser somada entre blocos'
+
+$custo = Get-PressureScanCost `
+    -Record $registros `
+    -ExclusionPath @('C:\perfis\ana\.nuget') `
+    -ExclusionProcess @('node.exe') `
+    -DriveRoot @('C:\')
+Assert-PressureCondition `
+    -Condition ($custo.Available -and @($custo.Processes)[0].Name -eq 'antigo.exe') `
+    -Message 'Ranking de processos deve ordenar por tempo de varredura'
+Assert-PressureCondition `
+    -Condition ((@($custo.Processes) | Where-Object { $_.Name -eq 'node.exe' }).ExcludedProcess) `
+    -Message 'Processo ja excluido deve aparecer marcado como tal'
+Assert-PressureCondition `
+    -Condition ((@($custo.Processes) | Where-Object { $_.Name -eq 'claude.exe' }).Seconds -eq 120) `
+    -Message 'Tempo deve ser convertido de milissegundos para segundos'
+Assert-PressureCondition `
+    -Condition (@($custo.Paths | Where-Object { $_.Label -like '*.claude-pessoal*' -and -not $_.Covered }).Count -eq 1) `
+    -Message 'Diretorio sem exclusao deve constar como exposto no ranking'
+Assert-PressureCondition `
+    -Condition (@($custo.Paths | Where-Object { $_.Suggestion -like '*\perfis\*\.claude*' }).Count -ge 1) `
+    -Message 'Ranking deve carregar o padrao generico sugerido'
+Assert-PressureCondition `
+    -Condition ((Get-PressureScanCost -Record @()).Available -eq $false) `
+    -Message 'Sem registros o custo de varredura deve declarar-se indisponivel'
+
+# --- varredura detectada pelo processo ---
+# Enquanto a varredura roda, FullScanStartTime e FullScanEndTime continuam
+# descrevendo a anterior. Este e o caso real observado em 30/07/2026: motor a
+# 47% da CPU e os campos dizendo que nada estava em andamento.
+$processoAgendado = [pscustomobject]@{
+    ProcessId = 14724
+    CreationDate = [datetime]'2026-07-30T16:45:13'
+    CommandLine = '"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.25040.2-0\MpCmdRun.exe" Scan -ScheduleJob -ScanTrigger 55'
+}
+$varreduraDetectada = Get-PressureScanProcess -Process @($processoAgendado)
+Assert-PressureCondition `
+    -Condition ($varreduraDetectada.Active -and $varreduraDetectada.Kind -eq 'agendada') `
+    -Message 'MpCmdRun com Scan -ScheduleJob deve ser reconhecido como varredura agendada'
+Assert-PressureCondition `
+    -Condition ($varreduraDetectada.ProcessId -eq 14724) `
+    -Message 'Varredura detectada deve informar o PID observado'
+
+# MpCmdRun tambem atualiza assinatura: presenca do processo nao basta.
+$semVarredura = Get-PressureScanProcess -Process @(
+    [pscustomobject]@{
+        ProcessId = 999
+        CreationDate = [datetime]'2026-07-30T16:00:00'
+        CommandLine = '"...\MpCmdRun.exe" -SignatureUpdate -UnifiedPlatformUpdate'
+    }
+)
+Assert-PressureCondition `
+    -Condition (-not $semVarredura.Active) `
+    -Message 'Atualizacao de assinatura nao pode ser confundida com varredura'
+Assert-PressureCondition `
+    -Condition (-not (Get-PressureScanProcess -Process @()).Active) `
+    -Message 'Sem processo de varredura o estado deve ser inativo'
+
+$statusDesatualizado = [pscustomobject]@{
+    RealTimeProtectionEnabled = $true
+    # Campos apontando para a varredura ANTERIOR, ja concluida.
+    FullScanStartTime = [datetime]'2026-07-23T14:52:00'
+    FullScanEndTime = [datetime]'2026-07-24T11:09:00'
+    AntivirusSignatureLastUpdated = [datetime]'2025-12-02T14:08:00'
+    AntivirusSignatureVersion = '1.441.670.0'
+}
+$preferenciaPadrao = [pscustomobject]@{
+    ExclusionPath = @()
+    ExclusionProcess = @()
+    ScanScheduleDay = 5
+    ScanScheduleTime = [timespan]'13:00:00'
+    ScanOnlyIfIdleEnabled = $false
+    DisableCatchupFullScan = $false
+}
+$comProcesso = Get-PressureDefenderState `
+    -Status $statusDesatualizado `
+    -Preference $preferenciaPadrao `
+    -ScanProcess $varreduraDetectada `
+    -Now ([datetime]'2026-07-30T18:00:00')
+Assert-PressureCondition `
+    -Condition $comProcesso.ScanInProgress `
+    -Message 'Processo de varredura ativo deve indicar varredura em andamento'
+Assert-PressureCondition `
+    -Condition ($comProcesso.ScanSource -eq 'processo de varredura') `
+    -Message 'Estado deve declarar que a deteccao veio do processo'
+Assert-PressureCondition `
+    -Condition ($comProcesso.ScanStartedAt -eq '2026-07-30 16:45') `
+    -Message 'Inicio da varredura deve vir do processo, nao do campo defasado'
+Assert-PressureCondition `
+    -Condition ($comProcesso.SignatureAgeDays -eq 240) `
+    -Message 'Idade da assinatura deve ser calculada em dias'
+Assert-PressureCondition `
+    -Condition ($comProcesso.SignatureVersion -eq '1.441.670.0') `
+    -Message 'Versao da assinatura deve ser exposta'
+
+$semProcesso = Get-PressureDefenderState `
+    -Status $statusDesatualizado `
+    -Preference $preferenciaPadrao `
+    -Now ([datetime]'2026-07-30T18:00:00')
+Assert-PressureCondition `
+    -Condition (-not $semProcesso.ScanInProgress -and $semProcesso.ScanSource -eq '') `
+    -Message 'Sem processo e com campos concluidos nao ha varredura em andamento'
+
+# O caminho antigo continua valendo quando o provedor de fato indica varredura.
+Assert-PressureCondition `
+    -Condition ((Get-PressureDefenderState `
+        -Status ([pscustomobject]@{
+            RealTimeProtectionEnabled = $true
+            FullScanStartTime = [datetime]'2026-07-30T13:00:00'
+            FullScanEndTime = [datetime]'2026-07-24T11:09:00'
+        }) `
+        -Preference $preferenciaPadrao `
+        -Now ([datetime]'2026-07-30T14:00:00')).ScanSource -eq 'campos do provedor') `
+    -Message 'Deteccao pelos campos do provedor deve continuar funcionando'
 
 # O provedor real desta plataforma devolve TimeSpan; outras devolvem DateTime.
 $timeSpanState = Get-PressureDefenderState `
