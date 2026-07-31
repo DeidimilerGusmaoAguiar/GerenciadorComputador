@@ -1161,6 +1161,32 @@ function Get-PressureLevelName {
     return @('SAUDÁVEL', 'OBSERVAR', 'ATENÇÃO', 'CRÍTICO', 'EMERGÊNCIA')[$Level]
 }
 
+function Test-PressureMetricAvailable {
+    <#
+    .SYNOPSIS
+    Diz se a leitura de um recurso chegou nesta amostra.
+
+    .DESCRIPTION
+    Amostras gravadas antes desta versão não trazem os campos de
+    disponibilidade. Campo ausente significa "coletado normalmente", nunca
+    falha: tratar ausência como falha reescreveria o histórico inteiro como
+    indisponível.
+    #>
+    param(
+        [Parameter(Mandatory)]$Metrics,
+        [Parameter(Mandatory)][string]$Property
+    )
+
+    if ($null -eq $Metrics) {
+        return $false
+    }
+    $field = $Metrics.PSObject.Properties[$Property]
+    if ($null -eq $field) {
+        return $true
+    }
+    return [bool]$field.Value
+}
+
 function New-PressureResourceAssessment {
     param(
         [Parameter(Mandatory)][string]$Key,
@@ -1214,8 +1240,14 @@ function Get-PressureAssessment {
         -Property 'NetworkPercent' `
         -Threshold 80
 
+    # Leitura ausente não é leitura zerada. Sem o contador, o recurso sai como
+    # indisponível e fica fora do veredito: zero disponível significaria
+    # pressão máxima e o painel anunciaria emergência por falha de coleta.
+    $cpuAvailable = Test-PressureMetricAvailable -Metrics $Metrics -Property 'CpuAvailable'
     $cpuPercent = [double]$Metrics.CpuPercent
-    $cpuLevel = if ($cpuPercent -ge 85 -and $cpuStreak -ge 3) {
+    $cpuLevel = if (-not $cpuAvailable) {
+        0
+    } elseif ($cpuPercent -ge 85 -and $cpuStreak -ge 3) {
         3
     } elseif ($cpuPercent -ge 85) {
         2
@@ -1224,7 +1256,9 @@ function Get-PressureAssessment {
     } else {
         0
     }
-    $cpuBasis = if ($cpuStreak -ge 3) {
+    $cpuBasis = if (-not $cpuAvailable) {
+        'O contador de processador não respondeu nesta amostra.'
+    } elseif ($cpuStreak -ge 3) {
         "Uso acima de 85% por $cpuStreak ciclos consecutivos."
     } elseif ($cpuPercent -ge 85) {
         'Pico acima de 85%; ainda não é uma saturação sustentada.'
@@ -1235,18 +1269,26 @@ function Get-PressureAssessment {
         -Key 'cpu' `
         -Label 'CPU' `
         -Level $cpuLevel `
-        -Score $cpuPercent `
-        -Value ([math]::Round($cpuPercent, 1)) `
+        -Score $(if ($cpuAvailable) { $cpuPercent } else { 0.0 }) `
+        -Value $(if ($cpuAvailable) { [math]::Round($cpuPercent, 1) } else { $null }) `
         -Unit '%' `
-        -Detail "$([math]::Round($cpuPercent, 1))% da capacidade total" `
-        -Basis $cpuBasis
+        -Detail $(if ($cpuAvailable) {
+            "$([math]::Round($cpuPercent, 1))% da capacidade total"
+        } else {
+            'leitura indisponível nesta amostra'
+        }) `
+        -Basis $cpuBasis `
+        -Available $cpuAvailable
 
+    $memoryAvailable = Test-PressureMetricAvailable -Metrics $Metrics -Property 'MemoryAvailable'
     $availableMB = [double]$Metrics.AvailableMB
     $availableGB = $availableMB / 1024
     $availablePercent = [double]$Metrics.AvailablePercent
     $commitPercent = [double]$Metrics.CommitPercent
     $memoryUsedPercent = [math]::Min(100, [math]::Max(0, 100 - $availablePercent))
-    $memoryLevel = if ($availableMB -lt 750 -or $commitPercent -ge 97) {
+    $memoryLevel = if (-not $memoryAvailable) {
+        0
+    } elseif ($availableMB -lt 750 -or $commitPercent -ge 97) {
         4
     } elseif ($availableMB -lt 1536 -or $commitPercent -ge 92) {
         3
@@ -1257,19 +1299,32 @@ function Get-PressureAssessment {
     } else {
         0
     }
-    $memoryScore = [math]::Max(
-        $commitPercent,
-        [math]::Min(100, 100 - (100 * $availableGB / 8))
-    )
+    $memoryScore = if (-not $memoryAvailable) {
+        0.0
+    } else {
+        [math]::Max(
+            $commitPercent,
+            [math]::Min(100, 100 - (100 * $availableGB / 8))
+        )
+    }
     $memory = New-PressureResourceAssessment `
         -Key 'memory' `
         -Label 'Memória' `
         -Level $memoryLevel `
         -Score $memoryScore `
-        -Value ([math]::Round($memoryUsedPercent, 1)) `
+        -Value $(if ($memoryAvailable) { [math]::Round($memoryUsedPercent, 1) } else { $null }) `
         -Unit '%' `
-        -Detail "$([math]::Round($availableGB, 2)) GB disponíveis • commit $([math]::Round($commitPercent, 1))%" `
-        -Basis 'Disponível mede RAM reutilizável; commit mede a reserva total garantida por RAM ou page file.'
+        -Detail $(if ($memoryAvailable) {
+            "$([math]::Round($availableGB, 2)) GB disponíveis • commit $([math]::Round($commitPercent, 1))%"
+        } else {
+            'leitura indisponível nesta amostra'
+        }) `
+        -Basis $(if ($memoryAvailable) {
+            'Disponível mede RAM reutilizável; commit mede a reserva total garantida por RAM ou page file.'
+        } else {
+            'O contador de memória não respondeu nesta amostra.'
+        }) `
+        -Available $memoryAvailable
 
     $diskPercent = [double]$Metrics.DiskPercent
     $diskLatencyMs = if ($null -eq $Metrics.DiskLatencyMs) {
@@ -1407,16 +1462,19 @@ function Get-PressureAssessment {
         -Basis $networkBasis
 
     $resources = @($cpu, $memory, $disk, $gpu, $network)
-    $dominant = @(
+    $measured = @(
         $resources |
             Where-Object Available |
             Sort-Object `
                 @{ Expression = 'Level'; Descending = $true },
-                @{ Expression = 'Score'; Descending = $true } |
-            Select-Object -First 1
-    )[0]
-    $overallLevel = [int]$dominant.Level
-    $overallSummary = if ($overallLevel -eq 0) {
+                @{ Expression = 'Score'; Descending = $true }
+    )
+    # Com CPU e memória podendo faltar, a lista de medidos pode ficar vazia.
+    $dominant = if ($measured.Count -gt 0) { $measured[0] } else { $null }
+    $overallLevel = if ($null -eq $dominant) { 0 } else { [int]$dominant.Level }
+    $overallSummary = if ($null -eq $dominant) {
+        'Nenhum recurso pôde ser medido nesta amostra; sem leitura o painel não emite veredito.'
+    } elseif ($overallLevel -eq 0) {
         'Nenhum gargalo sustentado foi detectado nesta amostra.'
     } else {
         "$($dominant.Label) é a pressão dominante: $($dominant.Basis)"
@@ -1425,8 +1483,8 @@ function Get-PressureAssessment {
     [pscustomobject]@{
         Level = $overallLevel
         State = Get-PressureLevelName -Level $overallLevel
-        Score = [math]::Round([double]$dominant.Score, 1)
-        DominantResource = $dominant.Key
+        Score = if ($null -eq $dominant) { 0.0 } else { [math]::Round([double]$dominant.Score, 1) }
+        DominantResource = if ($null -eq $dominant) { '' } else { $dominant.Key }
         Summary = $overallSummary
         Resources = $resources
     }
@@ -4232,6 +4290,10 @@ function Get-PressureSnapshot {
     }
 
     $cpuTotal = @($cpuRows | Where-Object Name -eq '_Total' | Select-Object -First 1)
+    # Os zeros abaixo mantêm o formato da amostra estável para o histórico; quem
+    # decide se o número vale são os campos CpuAvailable e MemoryAvailable.
+    $cpuAvailable = $cpuTotal.Count -gt 0
+    $memoryAvailable = $null -ne $memoryRow
     $cpuPercent = if ($cpuTotal.Count -gt 0) {
         [double]$cpuTotal[0].PercentProcessorTime
     } else {
@@ -4514,6 +4576,8 @@ function Get-PressureSnapshot {
 
     $metrics = [pscustomobject]@{
         Timestamp = (Get-Date).ToString('o')
+        CpuAvailable = $cpuAvailable
+        MemoryAvailable = $memoryAvailable
         CpuPercent = [math]::Round($cpuPercent, 1)
         AvailableMB = [math]::Round($availableMB, 1)
         AvailablePercent = [math]::Round($availablePercent, 1)

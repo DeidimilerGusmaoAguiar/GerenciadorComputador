@@ -98,6 +98,69 @@ Assert-PressureCondition `
     -Condition (-not $gpuResource.Available) `
     -Message 'GPU sem WDDM deve aparecer como indisponivel'
 
+# Falha de coleta chega como zero nos campos numericos. Zero disponivel e
+# indistinguivel de emergencia real, entao o veredito tem de vir do campo de
+# disponibilidade, nunca do numero.
+$memoryUnread = New-TestMetrics -Overrides @{
+    MemoryAvailable = $false
+    AvailableMB = 0
+    AvailablePercent = 0
+    CommitPercent = 0
+}
+$memoryUnreadAssessment = Get-PressureAssessment `
+    -Metrics $memoryUnread `
+    -GpuAvailable $true
+$memoryResource = @($memoryUnreadAssessment.Resources | Where-Object Key -eq 'memory')[0]
+Assert-PressureCondition `
+    -Condition (-not $memoryResource.Available) `
+    -Message 'Memoria sem leitura deve aparecer como indisponivel'
+Assert-PressureCondition `
+    -Condition ($memoryResource.Level -eq 0) `
+    -Message 'Memoria sem leitura nao pode receber nivel de pressao'
+Assert-PressureCondition `
+    -Condition ($null -eq $memoryResource.Value) `
+    -Message 'Memoria sem leitura nao pode publicar valor numerico'
+Assert-PressureCondition `
+    -Condition ($memoryUnreadAssessment.DominantResource -ne 'memory') `
+    -Message 'Memoria sem leitura nao pode ser o recurso dominante'
+Assert-PressureCondition `
+    -Condition ($memoryUnreadAssessment.Level -lt 4) `
+    -Message 'Falha de coleta de memoria nao pode virar EMERGENCIA'
+
+$cpuUnread = New-TestMetrics -Overrides @{
+    CpuAvailable = $false
+    CpuPercent = 0
+}
+$cpuUnreadAssessment = Get-PressureAssessment `
+    -Metrics $cpuUnread `
+    -GpuAvailable $true
+$cpuResource = @($cpuUnreadAssessment.Resources | Where-Object Key -eq 'cpu')[0]
+Assert-PressureCondition `
+    -Condition (-not $cpuResource.Available) `
+    -Message 'CPU sem leitura deve aparecer como indisponivel'
+Assert-PressureCondition `
+    -Condition ($null -eq $cpuResource.Value) `
+    -Message 'CPU sem leitura nao pode publicar 0% como se fosse ocioso'
+
+# Amostra antiga do historico nao tem os campos novos: ausencia significa
+# coletado, senao todo o passado viraria indisponivel.
+$legacySample = New-TestMetrics
+Assert-PressureCondition `
+    -Condition (
+        -not $legacySample.PSObject.Properties['MemoryAvailable'] -and
+        -not $legacySample.PSObject.Properties['CpuAvailable']
+    ) `
+    -Message 'Amostra de referencia deve simular historico sem os campos novos'
+$legacyAssessment = Get-PressureAssessment `
+    -Metrics $legacySample `
+    -GpuAvailable $true
+Assert-PressureCondition `
+    -Condition (
+        @($legacyAssessment.Resources | Where-Object Key -eq 'memory')[0].Available -and
+        @($legacyAssessment.Resources | Where-Object Key -eq 'cpu')[0].Available
+    ) `
+    -Message 'Amostra sem os campos novos deve continuar valendo como medida'
+
 $cliContext = Get-PressureProcessContext `
     -Name 'node.exe' `
     -ParentName 'codex.exe' `
