@@ -22,7 +22,9 @@ CLI de IA.
 Leia também [SECURITY.md](SECURITY.md), [AGENTS.md](AGENTS.md), o
 [guia das CLIs de IA](docs/AI-CLI.md) e o
 [guia de diagnóstico de memória](docs/MEMORY.md). Para monitoramento contínuo,
-consulte o [guia do painel Pulso](docs/PRESSURE-DASHBOARD.md).
+consulte o [guia do painel Pulso](docs/PRESSURE-DASHBOARD.md). Para Docker e
+WSL2 — anatomia de travamento, defesas e diagnóstico — veja
+[docs/DOCKER-WSL2.md](docs/DOCKER-WSL2.md).
 
 ## Requisitos
 
