@@ -228,7 +228,7 @@ permanece fixo e reúne três coisas que valem em qualquer área:
 | Visão geral | `#visao` | Dial de pressão, resumo textual e os cinco cartões de recurso com sparkline |
 | CLIs e sessões | `#clis` | Árvore do Windows Terminal, cartões de sessão e o diálogo de encerramento |
 | Processos | `#processos` | Tabela por PID, ordenação por métrica e detalhe do processo selecionado |
-| Diagnóstico | `#diagnostico` | Sinais interpretados, contexto da amostra, volumes, exposição dos perfis de CLI ao antimalware e limites de cobertura |
+| Diagnóstico | `#diagnostico` | Sinais interpretados, contexto da amostra, volumes, custo do Docker e da VM do WSL2, exposição dos perfis de CLI ao antimalware e limites de cobertura |
 
 Somente a área ativa fica visível; a faixa viva continua atualizada em todas
 elas, de modo que trocar de área não custa o acompanhamento de relance. As abas
@@ -334,6 +334,40 @@ pasta de repositórios, por exemplo — não aparece na descoberta por convenç�
 o mapa, o painel contaria menos perfis expostos do que a máquina realmente tem, e
 o número menor pareceria uma boa notícia.
 
+### Docker e a VM do WSL2
+
+A área Diagnóstico tem um painel dedicado ao Docker porque a VM do WSL2 já
+travou esta máquina inteira (03/08/2026: uma suíte de testes encheu a VM de
+containers, o motor afogou e o `docker ps` parou de responder). O coletor
+aplica ao Docker a mesma regra do resto do painel — leitura ausente não é
+recurso zerado:
+
+- **afogado é estado de primeira classe**: CLI sem resposta dentro do prazo
+  vira o estado `afogado`, com a orientação de não empilhar carga nova — nunca
+  uma lista vazia de containers;
+- com o Docker **desligado**, nenhuma CLI é chamada e o custo da seção é zero;
+- a sondagem roda num **processo filho com prazo de 8 s** e cadência própria
+  (padrão 30 s, dobrada quando o motor afoga), porque um `docker.exe` pendurado
+  só é abortável matando o processo filho — e é exatamente nesse cenário que o
+  painel mais precisa continuar leve;
+- o consumo por container vem do `docker stats`; limite de memória igual ao
+  total da VM denuncia container **sem teto**, candidato a `cpus`/`mem_limit`
+  no compose do projeto;
+- containers com a label `org.testcontainers` em execução aparecem como
+  possível vazamento de suíte de teste; o detalhe com limiar de idade sai de
+  `scripts\report-testcontainers-leak.ps1`;
+- o painel lê o `.wslconfig` e avisa quando `autoMemoryReclaim` está numa seção
+  que o WSL desta versão ignora — teto declarado não é teto vigente;
+- o tamanho do VHDX de dados vem do arquivo no host. Ele nunca encolhe sozinho:
+  recuperar espaço morto é compactação, operação aprovada à parte e com o
+  Docker parado.
+
+A VM (`vmmem`) é medida pelo host mesmo com o motor afogado ou sem CLI, com os
+núcleos ocupados calculados por delta de CPU entre sondagens — a primeira
+leitura aparece como ausente, não como zero. Para investigação pontual no
+terminal existem a skill `pressao-docker` e o relatório
+`scripts\report-docker-pressure.ps1`, que usam o mesmo coletor.
+
 ## Fontes das métricas
 
 | Recurso | Fonte nativa | Como é interpretado |
@@ -350,6 +384,7 @@ o número menor pareceria uma boa notícia.
 | Conexões | `MSFT_NetTCPConnection` | Contagem de conexões estabelecidas por PID, atualizada em ritmo menor |
 | Contexto | `Win32_Process` e `Win32_Service` | Processo pai, horário de criação, sessão, categoria segura e serviços hospedados |
 | Antimalware | `MSFT_MpComputerStatus` e `MSFT_MpPreference` | Varredura em andamento, agenda, `ScanOnlyIfIdle` e exclusões, relidos a cada 60 s |
+| Docker/WSL2 | CLI `docker` em job com prazo, processos do host e `.wslconfig` | Estados desligado, ocioso, ativo e afogado; consumo por container e VM, em cadência própria de 30 s |
 | Custo próprio | Linhas já coletadas de `PerfProc_Process` | CPU do painel, CPU dos provedores WMI e fração do intervalo gasta coletando |
 
 Os nomes das classes CIM são estáveis e não dependem do idioma em que o

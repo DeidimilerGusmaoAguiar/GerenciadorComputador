@@ -425,6 +425,24 @@
         </p>
       </section>
 
+      <section class="panel docker-panel" aria-labelledby="docker-title">
+        <div class="panel-heading">
+          <div>
+            <p class="eyebrow">Containers e VM do WSL2</p>
+            <h2 id="docker-title">O que o Docker está custando</h2>
+          </div>
+          <span class="panel-count" id="docker-count">medindo</span>
+        </div>
+        <p class="exclusion-schedule" id="docker-note">Sondando o motor…</p>
+        <div class="exclusion-grid" id="docker-grid"></div>
+        <p class="exclusion-footnote">
+          Motor sem resposta aparece como afogado — nunca como zero containers. A sondagem
+          roda em cadência própria, com prazo curto, num processo filho descartável, para
+          não custar ao painel. Nada é iniciado, parado ou removido por aqui: encerrar VM,
+          recriar containers ou compactar VHDX seguem exigindo aprovação nominal.
+        </p>
+      </section>
+
       <section class="panel capability-panel" aria-labelledby="capability-title">
         <div class="panel-heading">
           <div>

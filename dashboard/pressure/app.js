@@ -714,6 +714,135 @@
       .join("");
   }
 
+  function renderDocker(snapshot) {
+    const grid = byId("docker-grid");
+    // Aba carregada antes deste painel existir continua funcionando: sem o
+    // contêiner, esta seção apenas não é desenhada.
+    if (!grid) {
+      return;
+    }
+    const docker = snapshot.Docker || null;
+    if (!docker) {
+      byId("docker-count").textContent = "sem leitura";
+      byId("docker-note").textContent =
+        "A sondagem ainda não rodou nesta instância do painel.";
+      grid.innerHTML = "";
+      return;
+    }
+
+    const state = docker.EngineState || "indisponivel";
+    const stateLabels = {
+      desligado: "desligado",
+      ocioso: "ocioso",
+      ativo: `${docker.RunningCount} container(s)`,
+      afogado: "AFOGADO",
+      indisponivel: "indisponível"
+    };
+    byId("docker-count").textContent = stateLabels[state] || state;
+    byId("docker-note").textContent =
+      `${docker.Detail || ""}${docker.CheckedAt ? ` Sondado às ${docker.CheckedAt}.` : ""}`;
+
+    const items = [];
+    if (state === "afogado") {
+      items.push({
+        level: 4,
+        title: "Motor sem resposta",
+        value: "afogado",
+        detail:
+          "Não empilhe carga nova. O caminho de socorro é o wsl --shutdown, que exige aprovação nominal.",
+        source: "sondagem com prazo estourado"
+      });
+    }
+    if (docker.VmmemPresent) {
+      const cores = docker.VmmemCores;
+      const hasCores = cores !== null && cores !== undefined;
+      items.push({
+        level: hasCores && cores >= 3 ? 3 : hasCores && cores >= 1.5 ? 2 : 0,
+        title: `VM do WSL2 (vmmem ${docker.VmmemPid})`,
+        value: hasCores ? `${formatNumber(cores, 2)} núcleo(s)` : "aquecendo",
+        detail:
+          `${formatNumber(docker.VmmemWorkingSetMB ?? 0, 0)} MB residentes · ` +
+          `${formatNumber(docker.VmmemPrivateMB ?? 0, 0)} MB privados`,
+        source: "delta de CPU entre sondagens"
+      });
+    }
+    const wsl = docker.WslConfig || {};
+    if (wsl.Present === true) {
+      const reclaimOk = wsl.ReclaimActive === true;
+      items.push({
+        level: reclaimOk ? 0 : 2,
+        title: ".wslconfig vigente",
+        value: `${wsl.MemoryGB ?? "?"} GB · ${wsl.Processors ?? "?"} CPUs`,
+        detail: reclaimOk
+          ? `reclaim ${wsl.ReclaimMode || "?"} ativo · swap ${wsl.SwapGB ?? "?"} GB`
+          : "autoMemoryReclaim fora de [experimental] — o WSL ignora a chave e a RAM não volta",
+        source: "arquivo do usuário"
+      });
+    }
+    const containers = (docker.Containers || [])
+      .slice()
+      .sort((a, b) => (b.CpuPercent || 0) - (a.CpuPercent || 0))
+      .slice(0, 6);
+    for (const container of containers) {
+      const cpu = container.CpuPercent ?? 0;
+      const unbounded = container.Unbounded === true;
+      items.push({
+        level: cpu >= 150 || (unbounded && cpu >= 80) ? 3 : cpu >= 80 || unbounded ? 2 : 0,
+        title: container.Name,
+        value: `${formatNumber(cpu, 1)}% CPU`,
+        detail:
+          `${formatNumber(container.MemoryMB ?? 0, 0)} MB` +
+          (container.MemoryLimitMB ? ` / ${formatNumber(container.MemoryLimitMB, 0)} MB` : "") +
+          (unbounded ? " — sem teto de memória" : ""),
+        source: "docker stats"
+      });
+    }
+    if (docker.TestcontainersCount > 0) {
+      items.push({
+        level: 3,
+        title: "Efêmeros de teste em execução",
+        value: `${docker.TestcontainersCount}`,
+        detail:
+          (docker.Testcontainers || []).map((tc) => tc.Name).slice(0, 5).join(", ") +
+          " — vazamento se persistirem depois da suíte",
+        source: "label org.testcontainers"
+      });
+    }
+    if (typeof docker.DanglingVolumes === "number" && docker.DanglingVolumes > 0) {
+      items.push({
+        level: 1,
+        title: "Volumes sem dono",
+        value: `${docker.DanglingVolumes}`,
+        detail: "Candidatos a remoção aprovada; o painel não remove nada.",
+        source: "docker volume ls dangling"
+      });
+    }
+    if (docker.VhdxSizeGB > 0) {
+      items.push({
+        level: 0,
+        title: "Arquivo de dados (VHDX)",
+        value: `${formatNumber(docker.VhdxSizeGB, 1)} GB`,
+        detail: "Só encolhe com compactação aprovada, com o Docker parado.",
+        source: "tamanho no disco do host"
+      });
+    }
+
+    grid.innerHTML = items
+      .map(
+        (item) => `
+          <article class="exclusion-item" data-level="${clamp(item.level, 0, 4)}">
+            <div class="exclusion-item-head">
+              <strong>${escapeHtml(item.title)}</strong>
+              <span>${escapeHtml(item.value)}</span>
+            </div>
+            <small>${escapeHtml(item.detail)}</small>
+            <small class="exclusion-source">${escapeHtml(item.source)}</small>
+          </article>
+        `
+      )
+      .join("");
+  }
+
   function renderScanCost(snapshot) {
     const cost = snapshot.ScanCost;
     const processList = byId("scancost-processes");
@@ -1112,6 +1241,7 @@
     renderSampleContext(snapshot);
     renderExclusions(snapshot);
     renderScanCost(snapshot);
+    renderDocker(snapshot);
     renderCapabilities(snapshot);
     renderConsumers();
   }

@@ -553,6 +553,12 @@ function New-PressureMonitorState {
         [ValidateRange(60, 86400)]
         [int]$ScanCostRefreshSeconds = 600,
 
+        # A sondagem do Docker chama CLI externa em processo filho; a cadência
+        # própria limita esse custo e o prazo duro impede que um motor afogado
+        # pendure a coleta do painel.
+        [ValidateRange(10, 3600)]
+        [int]$DockerRefreshSeconds = 30,
+
         [ValidateRange(2, 600)]
         [int]$MaxRefreshSeconds = 30,
 
@@ -602,11 +608,13 @@ function New-PressureMonitorState {
         TotalPhysicalMemoryBytes = [double]$computer.TotalPhysicalMemory
         MetadataByPid = @{}
         MetadataRefreshAt = [datetime]::MinValue
+        ProcessIdentityCache = @{}
         ConnectionCountsByPid = @{}
         ConnectionRefreshAt = (Get-Date).AddSeconds(10)
         DiskCapacities = @()
         DiskCapacityRefreshAt = [datetime]::MinValue
         PreviousDiskRawByName = @{}
+        PreviousCpuRaw = $null
         History = [Collections.Generic.List[object]]::new()
         CollectionCount = 0
         CollectionMsTotal = 0.0
@@ -620,6 +628,10 @@ function New-PressureMonitorState {
         ScanCostRefreshAt = [datetime]::MinValue
         ScanCostRefreshSeconds = $ScanCostRefreshSeconds
         ScanCostEngineThreshold = 10
+        DockerRefreshSeconds = $DockerRefreshSeconds
+        DockerRefreshAt = [datetime]::MinValue
+        DockerState = $null
+        DockerPreviousVmmem = $null
         CliHomeRoots = @(
             Get-PressureCliHomeRoots `
                 -ExplicitRoot $CliHomeRoots `
@@ -635,6 +647,7 @@ function New-PressureMonitorState {
             VendorHardwareSensors = $false
             EtwRootCause = $false
             Defender = $false
+            Docker = $false
         }
     }
 }
@@ -782,8 +795,20 @@ function Resolve-PressureProcessMetadataTopology {
 }
 
 function Get-PressureProcessMetadataSnapshot {
+    <#
+        As duas consultas CIM abaixo custam ~0,85 s para ~418 processos. O laço
+        de classificação custava ~4,2 s — cinco vezes mais que a coleta dos
+        dados. As funções que ele chama são puras: dado o mesmo nome, pai,
+        linha de comando e conjunto de serviços, devolvem sempre o mesmo
+        resultado. Reaproveitá-las por processo elimina o recálculo de quem já
+        estava vivo no ciclo anterior, que é a esmagadora maioria.
+    #>
     [CmdletBinding()]
-    param()
+    param(
+        # Tabela de reaproveitamento entre ciclos. Vazio recalcula tudo, que é
+        # o comportamento original e o usado pelos testes.
+        [hashtable]$Cache = $null
+    )
 
     $processes = @(
         Get-CimInstance `
@@ -818,6 +843,12 @@ function Get-PressureProcessMetadataSnapshot {
     }
 
     $metadata = @{}
+    # Atribuição direta, não via `if` como expressão: uma coleção vazia escrita
+    # no fluxo de saída não produz objeto algum, e o HashSet nasceria $null.
+    $vistos = $null
+    if ($null -ne $Cache) {
+        $vistos = [Collections.Generic.HashSet[string]]::new()
+    }
     foreach ($process in $processes) {
         $pidKey = [string]$process.ProcessId
         $parentKey = [string]$process.ParentProcessId
@@ -831,18 +862,51 @@ function Get-PressureProcessMetadataSnapshot {
         } else {
             @()
         }
-        $context = Get-PressureProcessContext `
-            -Name ([string]$process.Name) `
-            -ParentName $parentName `
-            -CommandLine ([string]$process.CommandLine) `
-            -ServiceNames $serviceNames
-        $cliIdentity = Get-PressureCliIdentity `
-            -Name ([string]$process.Name) `
-            -CommandLine ([string]$process.CommandLine)
         $creationDate = if ($null -ne $process.CreationDate) {
             [datetime]$process.CreationDate
         } else {
             [datetime]::MinValue
+        }
+
+        # O instante de criação entra na chave porque o Windows recicla PID; os
+        # nomes de serviço entram porque um mesmo svchost pode passar a
+        # hospedar outro conjunto sem trocar de PID.
+        $chaveIdentidade = '{0}|{1}|{2}|{3}' -f `
+            $pidKey, $creationDate.Ticks, $parentName, ($serviceNames -join ',')
+        $identidade = $null
+        if ($null -ne $Cache) {
+            $null = $vistos.Add($chaveIdentidade)
+            if ($Cache.ContainsKey($chaveIdentidade)) {
+                $identidade = $Cache[$chaveIdentidade]
+            }
+        }
+        if ($null -eq $identidade) {
+            $context = Get-PressureProcessContext `
+                -Name ([string]$process.Name) `
+                -ParentName $parentName `
+                -CommandLine ([string]$process.CommandLine) `
+                -ServiceNames $serviceNames
+            $cliIdentity = Get-PressureCliIdentity `
+                -Name ([string]$process.Name) `
+                -CommandLine ([string]$process.CommandLine)
+            $identidade = [pscustomobject]@{
+                Category = $context.Category
+                Purpose = $context.Purpose
+                Protected = Test-PressureProtectedProcess -Name ([string]$process.Name)
+                IsTerminalHost = (
+                    (Get-PressureBaseProcessName -Name ([string]$process.Name)) -in
+                    $script:PressureTerminalHostProcessNames
+                )
+                CliName = [string]$cliIdentity.Name
+                CliDetectionConfidence = [string]$cliIdentity.Confidence
+                Workload = Get-PressureWorkloadLabel `
+                    -Name ([string]$process.Name) `
+                    -CommandLine ([string]$process.CommandLine) `
+                    -CliName ([string]$cliIdentity.Name)
+            }
+            if ($null -ne $Cache) {
+                $Cache[$chaveIdentidade] = $identidade
+            }
         }
 
         $metadata[$pidKey] = [pscustomobject]@{
@@ -852,20 +916,14 @@ function Get-PressureProcessMetadataSnapshot {
             ParentName = $parentName
             CreationDate = $creationDate
             SessionId = [uint32]$process.SessionId
-            Category = $context.Category
-            Purpose = $context.Purpose
+            Category = $identidade.Category
+            Purpose = $identidade.Purpose
             ServiceNames = $serviceNames
-            Protected = Test-PressureProtectedProcess -Name ([string]$process.Name)
-            IsTerminalHost = (
-                (Get-PressureBaseProcessName -Name ([string]$process.Name)) -in
-                $script:PressureTerminalHostProcessNames
-            )
-            CliName = [string]$cliIdentity.Name
-            CliDetectionConfidence = [string]$cliIdentity.Confidence
-            Workload = Get-PressureWorkloadLabel `
-                -Name ([string]$process.Name) `
-                -CommandLine ([string]$process.CommandLine) `
-                -CliName ([string]$cliIdentity.Name)
+            Protected = $identidade.Protected
+            IsTerminalHost = $identidade.IsTerminalHost
+            CliName = $identidade.CliName
+            CliDetectionConfidence = $identidade.CliDetectionConfidence
+            Workload = $identidade.Workload
             TerminalHosted = $false
             TerminalId = [uint32]0
             TerminalName = ''
@@ -876,6 +934,16 @@ function Get-PressureProcessMetadataSnapshot {
             RootCliId = [uint32]0
             RootCliName = ''
             Lineage = @()
+        }
+    }
+
+    # Sem a poda, a tabela acumularia uma entrada por processo já encerrado e
+    # cresceria sem limite num painel que fica dias no ar.
+    if ($null -ne $Cache) {
+        foreach ($chave in @($Cache.Keys)) {
+            if (-not $vistos.Contains($chave)) {
+                $Cache.Remove($chave)
+            }
         }
     }
 
@@ -892,7 +960,8 @@ function Update-PressureProcessMetadata {
     }
 
     try {
-        $State.MetadataByPid = Get-PressureProcessMetadataSnapshot
+        $State.MetadataByPid = Get-PressureProcessMetadataSnapshot `
+            -Cache $State.ProcessIdentityCache
         $State.MetadataRefreshAt = $now.AddSeconds($State.MetadataRefreshSeconds)
     } catch {
         $State.MetadataRefreshAt = $now.AddSeconds(10)
@@ -983,6 +1052,56 @@ function Get-PressureUnsignedDelta32 {
     }
 
     return [double](([uint32]::MaxValue - $Previous) + $Current + 1)
+}
+
+function Get-PressureCpuUtilization {
+    <#
+        Win32_PerfFormattedData_PerfOS_Processor entrega o percentual já cozido
+        pelo provedor WMI, calculado contra uma amostra anterior que não é a
+        nossa. Em consulta avulsa ele oscila sem relação com a carga real —
+        medido nesta base, marcou 100% com a máquina em 43% e 7% com ela em 57%.
+        Aqui derivamos o valor do contador bruto, com o intervalo que o próprio
+        coletor controla.
+
+        PercentProcessorTime da instância _Total é um PERF_100NSEC_TIMER_INV:
+        acumula tempo ocioso, então a utilização é o complemento da fração
+        ociosa do intervalo. Não se divide por núcleo — a instância _Total já
+        vem normalizada, e dividir prende a leitura em 95-100%.
+
+        Devolve $null quando ainda não há amostra anterior ou o contador foi
+        reiniciado. Quem chama traduz isso em CpuAvailable = $false, porque
+        leitura ausente não é máquina ociosa.
+    #>
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$RawRows,
+        [Parameter(Mandatory)]$State
+    )
+
+    $row = $RawRows | Where-Object Name -eq '_Total' | Select-Object -First 1
+    if ($null -eq $row) {
+        $State.PreviousCpuRaw = $null
+        return $null
+    }
+
+    $current = [pscustomobject]@{
+        IdleTicks = [uint64]$row.PercentProcessorTime
+        Timestamp = [uint64]$row.Timestamp_Sys100NS
+    }
+    $previous = $State.PreviousCpuRaw
+    $State.PreviousCpuRaw = $current
+
+    if ($null -eq $previous) {
+        return $null
+    }
+    if ($current.Timestamp -le $previous.Timestamp -or
+        $current.IdleTicks -lt $previous.IdleTicks) {
+        return $null
+    }
+
+    $elapsed = [double]($current.Timestamp - $previous.Timestamp)
+    $idle = [double]($current.IdleTicks - $previous.IdleTicks)
+    $busy = 100 * (1 - ($idle / $elapsed))
+    return [math]::Round([math]::Min(100, [math]::Max(0, $busy)), 1)
 }
 
 function Get-PressureDiskLatencies {
@@ -2323,6 +2442,16 @@ function Get-PressureCapabilities {
                 'Leitura de estado, agenda e exclusões; o painel nunca altera política de antimalware.'
             } else {
                 'O namespace do antimalware não respondeu; a correlação com varredura fica indisponível.'
+            }
+        }
+        [pscustomobject]@{
+            Key = 'docker'
+            Label = 'Containers e VM do WSL2'
+            Available = [bool]$State.Capabilities.Docker
+            Detail = if ($State.Capabilities.Docker) {
+                'Sonda o motor com prazo curto; afogamento é estado próprio, nunca zero containers.'
+            } else {
+                'Docker desligado, sem CLI ou sem resposta; a VM do WSL2 ainda é observada pelo host.'
             }
         }
         [pscustomobject]@{
@@ -3743,6 +3872,391 @@ function Update-PressureDefenderConfiguration {
     $State.DefenderRefreshAt = $now.AddSeconds($State.DefenderRefreshSeconds)
 }
 
+function Get-PressureWslConfigCaps {
+    <#
+    .SYNOPSIS
+    Lê os tetos declarados no .wslconfig do usuário.
+
+    .DESCRIPTION
+    Somente leitura. Também informa em qual seção autoMemoryReclaim está: no
+    WSL 2.7 a chave só vale dentro de [experimental] — em 03/08/2026 ela passou
+    um mês dentro de [wsl2] sendo ignorada com aviso. Teto declarado não é teto
+    vigente, e o painel mostra a diferença em vez de presumir.
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$Path = (Join-Path $env:USERPROFILE '.wslconfig')
+    )
+
+    $caps = [pscustomobject]@{
+        Present = $false
+        MemoryGB = $null
+        Processors = $null
+        SwapGB = $null
+        ReclaimMode = ''
+        ReclaimActive = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($Path) -or
+        -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $caps
+    }
+
+    $caps.Present = $true
+    $section = ''
+    foreach ($line in @(Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue)) {
+        $trimmed = ([string]$line).Trim()
+        if ($trimmed -match '^\[(?<name>[^\]]+)\]') {
+            $section = $Matches.name.ToLowerInvariant()
+            continue
+        }
+        if ($trimmed -notmatch '^(?<key>[A-Za-z]+)\s*=\s*(?<value>[^#\s]+)') {
+            continue
+        }
+        $key = $Matches.key.ToLowerInvariant()
+        $value = [string]$Matches.value
+        switch ($key) {
+            'memory' {
+                if ($value -match '^(?<n>[\d.]+)\s*(?<u>GB|MB)$') {
+                    $number = [double]$Matches.n
+                    $caps.MemoryGB = if ($Matches.u -eq 'MB') {
+                        [math]::Round($number / 1024, 1)
+                    } else {
+                        $number
+                    }
+                }
+            }
+            'processors' {
+                if ($value -match '^\d+$') { $caps.Processors = [int]$value }
+            }
+            'swap' {
+                if ($value -match '^(?<n>[\d.]+)\s*(?<u>GB|MB)$') {
+                    $number = [double]$Matches.n
+                    $caps.SwapGB = if ($Matches.u -eq 'MB') {
+                        [math]::Round($number / 1024, 1)
+                    } else {
+                        $number
+                    }
+                }
+            }
+            'automemoryreclaim' {
+                $caps.ReclaimMode = $value
+                $caps.ReclaimActive = ($section -eq 'experimental')
+            }
+        }
+    }
+    $caps
+}
+
+function ConvertFrom-PressureDockerSize {
+    <#
+    .SYNOPSIS
+    Converte um tamanho impresso pelo docker ("617.2MiB", "9.712GiB") em MB.
+    #>
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+    if ($Text -notmatch '(?<n>[\d.]+)\s*(?<u>[KkMmGgTt]i?B|B)') {
+        return $null
+    }
+    $number = [double]$Matches.n
+    switch -Regex ([string]$Matches.u) {
+        '^[Kk]' { return [math]::Round($number / 1024, 3) }
+        '^[Mm]' { return [math]::Round($number, 1) }
+        '^[Gg]' { return [math]::Round($number * 1024, 0) }
+        '^[Tt]' { return [math]::Round($number * 1024 * 1024, 0) }
+        default { return [math]::Round($number / 1MB, 3) }
+    }
+}
+
+function Get-PressureDockerState {
+    <#
+    .SYNOPSIS
+    Interpreta a sondagem do Docker/WSL2 com semântica explícita de ausência.
+
+    .DESCRIPTION
+    Motor que não respondeu dentro do prazo vira o estado 'afogado', nunca
+    "zero containers": em 03/08/2026 o silêncio do docker ps ERA o sintoma do
+    travamento. Sem processos do Docker Desktop o estado é 'desligado' e
+    nenhuma CLI chega a ser chamada.
+    #>
+    [CmdletBinding()]
+    param(
+        [bool]$EngineProcessesPresent = $false,
+        [int]$EngineProcessCount = 0,
+        [double]$EngineMemoryMB = 0,
+        $Vmmem = $null,
+        $Probe = $null,
+        [bool]$ProbeTimedOut = $false,
+        [int]$ProbeTimeoutSeconds = 8,
+        $WslConfig = $null,
+        [double]$VhdxSizeGB = 0,
+        [datetime]$Now = (Get-Date)
+    )
+
+    $containers = @()
+    $testcontainers = @()
+    $runningCount = 0
+    $danglingVolumes = $null
+    $unboundedCount = $null
+    $probeOk = (
+        -not $ProbeTimedOut -and
+        $null -ne $Probe -and
+        $Probe.ContainsKey('Ok') -and
+        $Probe.Ok -eq $true
+    )
+
+    if ($probeOk) {
+        $runningCount = @($Probe.Running).Count
+        $memoryCapMB = if ($null -ne $WslConfig -and $null -ne $WslConfig.MemoryGB) {
+            [double]$WslConfig.MemoryGB * 1024
+        } else {
+            $null
+        }
+        $containers = @(
+            foreach ($linha in @($Probe.Stats)) {
+                $parte = [string]$linha -split '\|', 3
+                if ($parte.Count -lt 3) { continue }
+                $memParte = [string]$parte[2] -split '/', 2
+                $usedMB = ConvertFrom-PressureDockerSize -Text $memParte[0]
+                $limitMB = if ($memParte.Count -gt 1) {
+                    ConvertFrom-PressureDockerSize -Text $memParte[1]
+                } else {
+                    $null
+                }
+                # Sem mem_limit, o docker imprime a memória total da VM como
+                # limite: encostar nesse valor identifica container sem teto.
+                $unbounded = if ($null -ne $memoryCapMB -and $null -ne $limitMB) {
+                    $limitMB -ge ($memoryCapMB * 0.85)
+                } else {
+                    $null
+                }
+                [pscustomobject]@{
+                    Name = [string]$parte[0]
+                    CpuPercent = if ($parte[1] -match '(?<n>[\d.]+)') {
+                        [math]::Round([double]$Matches.n, 1)
+                    } else {
+                        $null
+                    }
+                    MemoryMB = $usedMB
+                    MemoryLimitMB = $limitMB
+                    Unbounded = $unbounded
+                }
+            }
+        )
+        $unboundedCount = @($containers | Where-Object { $_.Unbounded -eq $true }).Count
+        $testcontainers = @(
+            foreach ($linha in @($Probe.Testcontainers)) {
+                $parte = [string]$linha -split '\|', 2
+                if ($parte.Count -lt 1 -or [string]::IsNullOrWhiteSpace($parte[0])) { continue }
+                [pscustomobject]@{
+                    Name = [string]$parte[0]
+                    RunningFor = if ($parte.Count -gt 1) { [string]$parte[1] } else { '' }
+                }
+            }
+        )
+        if ($Probe.ContainsKey('DanglingCount')) {
+            $danglingVolumes = [int]$Probe.DanglingCount
+        }
+    }
+
+    $engineState = if (-not $EngineProcessesPresent) {
+        'desligado'
+    } elseif ($ProbeTimedOut) {
+        'afogado'
+    } elseif (-not $probeOk) {
+        'indisponivel'
+    } elseif ($runningCount -gt 0) {
+        'ativo'
+    } else {
+        'ocioso'
+    }
+    $detail = switch ($engineState) {
+        'desligado' { 'Docker Desktop sem processos; nenhuma CLI foi chamada.' }
+        'afogado' {
+            "O motor não respondeu em $ProbeTimeoutSeconds s. Leitura ausente não é " +
+            'recurso zerado: em 03/08/2026 esse silêncio era o próprio sintoma.'
+        }
+        'indisponivel' {
+            $motivo = if ($null -ne $Probe -and $Probe.ContainsKey('Error') -and $Probe.Error) {
+                [string]$Probe.Error
+            } else {
+                'motivo não informado'
+            }
+            "Processos do Docker existem, mas a sondagem falhou: $motivo"
+        }
+        'ativo' { "$runningCount container(s) em execução; consumo por container abaixo." }
+        default { 'Motor de pé e sem nenhum container em execução.' }
+    }
+
+    [pscustomobject]@{
+        Available = $true
+        EngineState = $engineState
+        Detail = $detail
+        EngineProcessCount = $EngineProcessCount
+        EngineMemoryMB = [math]::Round($EngineMemoryMB, 0)
+        VmmemPresent = ($null -ne $Vmmem)
+        VmmemPid = if ($null -ne $Vmmem) { [int]$Vmmem.ProcessId } else { $null }
+        VmmemWorkingSetMB = if ($null -ne $Vmmem) { [double]$Vmmem.WorkingSetMB } else { $null }
+        VmmemPrivateMB = if ($null -ne $Vmmem) { [double]$Vmmem.PrivateMB } else { $null }
+        # $null na primeira amostra: sem leitura anterior não há delta, e essa
+        # leitura é ausente, não zero.
+        VmmemCores = if ($null -ne $Vmmem) { $Vmmem.Cores } else { $null }
+        RunningCount = $runningCount
+        Containers = $containers
+        UnboundedCount = $unboundedCount
+        TestcontainersCount = @($testcontainers).Count
+        Testcontainers = $testcontainers
+        DanglingVolumes = $danglingVolumes
+        WslConfig = $WslConfig
+        VhdxSizeGB = $VhdxSizeGB
+        CheckedAt = $Now.ToString('HH:mm:ss')
+    }
+}
+
+function Update-PressureDockerState {
+    <#
+    .SYNOPSIS
+    Sonda o Docker em cadência própria e com prazo duro.
+
+    .DESCRIPTION
+    As chamadas de CLI rodam num job de processo — não de thread — porque um
+    docker.exe pendurado num motor afogado só é abortável matando o processo
+    filho, e é exatamente nesse cenário que o painel mais precisa continuar
+    respondendo. Estouro de prazo vira estado 'afogado' e dobra o intervalo até
+    a próxima sondagem. Com o Docker desligado, nenhuma CLI é chamada.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$State)
+
+    $now = Get-Date
+    if ($now -lt $State.DockerRefreshAt) {
+        return
+    }
+
+    $engineProcs = @(
+        Get-Process -Name 'com.docker.backend', 'Docker Desktop' -ErrorAction SilentlyContinue
+    )
+    $vmmemProcs = @(Get-Process -Name 'vmmem*' -ErrorAction SilentlyContinue)
+
+    $vmmem = $null
+    if ($vmmemProcs.Count -gt 0) {
+        $vmmemProc = $vmmemProcs | Sort-Object WorkingSet64 -Descending | Select-Object -First 1
+        $cpuSeconds = $null
+        try { $cpuSeconds = [double]$vmmemProc.CPU } catch { $cpuSeconds = $null }
+        $cores = $null
+        $previous = $State.DockerPreviousVmmem
+        if ($null -ne $previous -and
+            $null -ne $cpuSeconds -and
+            [int]$previous.ProcessId -eq [int]$vmmemProc.Id -and
+            $cpuSeconds -ge [double]$previous.CpuSeconds) {
+            $elapsed = ($now - [datetime]$previous.SampledAt).TotalSeconds
+            if ($elapsed -gt 1) {
+                $cores = [math]::Round(($cpuSeconds - [double]$previous.CpuSeconds) / $elapsed, 2)
+            }
+        }
+        $State.DockerPreviousVmmem = [pscustomobject]@{
+            ProcessId = [int]$vmmemProc.Id
+            CpuSeconds = $cpuSeconds
+            SampledAt = $now
+        }
+        $vmmem = [pscustomobject]@{
+            ProcessId = [int]$vmmemProc.Id
+            WorkingSetMB = [math]::Round($vmmemProc.WorkingSet64 / 1MB, 0)
+            PrivateMB = [math]::Round($vmmemProc.PrivateMemorySize64 / 1MB, 0)
+            Cores = $cores
+        }
+    } else {
+        $State.DockerPreviousVmmem = $null
+    }
+
+    $probe = $null
+    $timedOut = $false
+    $probeTimeoutSeconds = 8
+    if ($engineProcs.Count -gt 0) {
+        $cli = Get-Command -Name docker -CommandType Application -ErrorAction SilentlyContinue
+        if ($null -eq $cli) {
+            $probe = @{ Ok = $false; Error = 'CLI docker não encontrada no PATH.' }
+        } else {
+            $job = Start-Job -ScriptBlock {
+                $resultado = @{ Ok = $false; Error = '' }
+                try {
+                    $running = @(docker ps --format '{{.Names}}' 2>$null)
+                    if ($LASTEXITCODE -ne 0) {
+                        $resultado.Error = 'docker ps retornou erro.'
+                        return $resultado
+                    }
+                    $stats = @()
+                    if ($running.Count -gt 0) {
+                        $stats = @(
+                            docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>$null
+                        )
+                    }
+                    $testcontainers = @(
+                        docker ps --filter 'label=org.testcontainers=true' --format '{{.Names}}|{{.RunningFor}}' 2>$null
+                    )
+                    $dangling = @(docker volume ls -q -f dangling=true 2>$null)
+                    $resultado.Ok = $true
+                    $resultado.Running = $running
+                    $resultado.Stats = $stats
+                    $resultado.Testcontainers = $testcontainers
+                    $resultado.DanglingCount = @($dangling).Count
+                } catch {
+                    $resultado.Error = [string]$_.Exception.Message
+                }
+                $resultado
+            }
+            if (Wait-Job -Job $job -Timeout $probeTimeoutSeconds) {
+                try {
+                    $probe = Receive-Job -Job $job -ErrorAction Stop
+                    if ($probe -is [object[]]) { $probe = $probe[-1] }
+                    if ($probe -isnot [hashtable]) {
+                        $probe = @{ Ok = $false; Error = 'sondagem devolveu formato inesperado.' }
+                    }
+                } catch {
+                    $probe = @{ Ok = $false; Error = [string]$_.Exception.Message }
+                }
+            } else {
+                Stop-Job -Job $job
+                $timedOut = $true
+            }
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $vhdxSizeGB = 0.0
+    $vhdxPath = Join-Path $env:LOCALAPPDATA 'Docker\wsl\disk\docker_data.vhdx'
+    if (Test-Path -LiteralPath $vhdxPath -PathType Leaf) {
+        $vhdxSizeGB = [math]::Round((Get-Item -LiteralPath $vhdxPath).Length / 1GB, 1)
+    }
+
+    $State.DockerState = Get-PressureDockerState `
+        -EngineProcessesPresent ($engineProcs.Count -gt 0) `
+        -EngineProcessCount $engineProcs.Count `
+        -EngineMemoryMB ([double](($engineProcs | Measure-Object WorkingSet64 -Sum).Sum) / 1MB) `
+        -Vmmem $vmmem `
+        -Probe $probe `
+        -ProbeTimedOut $timedOut `
+        -ProbeTimeoutSeconds $probeTimeoutSeconds `
+        -WslConfig (Get-PressureWslConfigCaps) `
+        -VhdxSizeGB $vhdxSizeGB `
+        -Now $now
+    $State.Capabilities.Docker = (
+        $engineProcs.Count -gt 0 -and -not $timedOut -and
+        $null -ne $probe -and $probe.ContainsKey('Ok') -and $probe.Ok -eq $true
+    )
+    $refreshSeconds = [int]$State.DockerRefreshSeconds
+    # Motor afogado: dobrar o intervalo evita pagar o prazo inteiro a cada
+    # ciclo justamente quando o painel mais precisa se manter leve.
+    $State.DockerRefreshAt = if ($timedOut) {
+        $now.AddSeconds([math]::Max(60, $refreshSeconds * 2))
+    } else {
+        $now.AddSeconds($refreshSeconds)
+    }
+}
+
 function Get-PressureParentWatch {
     <#
     .SYNOPSIS
@@ -4224,6 +4738,7 @@ function Get-PressureSnapshot {
     Update-PressureConnectionCounts -State $State
     Update-PressureDiskCapacities -State $State
     Update-PressureDefenderConfiguration -State $State
+    Update-PressureDockerState -State $State
 
     $cpuRows = @()
     $memoryRow = $null
@@ -4238,8 +4753,8 @@ function Get-PressureSnapshot {
     try {
         $cpuRows = @(
             Get-CimInstance `
-                Win32_PerfFormattedData_PerfOS_Processor `
-                -Property Name, PercentProcessorTime `
+                Win32_PerfRawData_PerfOS_Processor `
+                -Property Name, PercentProcessorTime, Timestamp_Sys100NS `
                 -ErrorAction Stop
         )
     } catch {
@@ -4333,13 +4848,15 @@ function Get-PressureSnapshot {
         }
     }
 
-    $cpuTotal = @($cpuRows | Where-Object Name -eq '_Total' | Select-Object -First 1)
+    $cpuUtilization = Get-PressureCpuUtilization -RawRows $cpuRows -State $State
     # Os zeros abaixo mantêm o formato da amostra estável para o histórico; quem
     # decide se o número vale são os campos CpuAvailable e MemoryAvailable.
-    $cpuAvailable = $cpuTotal.Count -gt 0
+    # A primeira coleta sempre cai aqui: sem amostra anterior não há delta, e
+    # essa leitura é ausente, não zero.
+    $cpuAvailable = $null -ne $cpuUtilization
     $memoryAvailable = $null -ne $memoryRow
-    $cpuPercent = if ($cpuTotal.Count -gt 0) {
-        [double]$cpuTotal[0].PercentProcessorTime
+    $cpuPercent = if ($null -ne $cpuUtilization) {
+        [double]$cpuUtilization
     } else {
         0.0
     }
@@ -4754,6 +5271,7 @@ function Get-PressureSnapshot {
         Insights = @($insights)
         Defender = $defender
         ScanCost = (Update-PressureScanCostCache -State $State -Defender $defender)
+        Docker = $State.DockerState
         PhysicalDisks = $physicalDisks
         Volumes = @($State.DiskCapacities)
         Capabilities = Get-PressureCapabilities -State $State

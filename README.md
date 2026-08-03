@@ -212,6 +212,7 @@ pwsh -NoProfile -File .\scripts\new-cleanup-checkpoint.ps1 `
 | `stop-pressure-cli-session.ps1` | Dry-run ou encerramento nominal de árvore órfã revalidada | Só com `-Execute` |
 | `record-pressure.ps1` | Gravação desassistida do histórico de pressão, sem servidor nem navegador | Não |
 | `report-exclusion-coverage.ps1` | Relatório local de cobertura das exclusões do antimalware | Não |
+| `report-docker-pressure.ps1` | Pressão do Docker/WSL2: estado do motor (inclusive afogado), consumo por container, tetos e VHDX | Não |
 | `report-testcontainers-leak.ps1` | Denúncia de containers de Testcontainers vazados e de motor Docker sem resposta | Não |
 | `remove-pressure-history.ps1` | Dry-run ou aplicação da retenção do histórico do painel | Só com `-Execute` |
 
