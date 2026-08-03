@@ -101,12 +101,23 @@ if ($itens.Count -eq 0) {
     return
 }
 
+# O reaper carrega a mesma label, mas conta outra historia: ryuk VIVO segura a
+# sessao de teste (efemero antigo = suite longa ou runner pendurado); ryuk
+# AUSENTE com efemeros vivos = vazamento classico de sessao morta.
+$reaperVivo = @(
+    $itens | Where-Object { $_.Situacao -eq 'running' -and $_.Nome -like 'testcontainers-ryuk-*' }
+).Count -gt 0
+$itens = @($itens | Where-Object { $_.Nome -notlike 'testcontainers-ryuk-*' })
+
 $vazados = @($itens | Where-Object -Property Vazado)
 $parados = @($itens | Where-Object { $_.Situacao -ne 'running' })
 $emTeste = @($itens | Where-Object { $_.Situacao -eq 'running' -and -not $_.Vazado })
 
-if ($vazados.Count -gt 0) {
-    Write-Output "VAZAMENTO ATIVO: $($vazados.Count) container(s) de Testcontainers rodando ha mais de $ThresholdMinutes min."
+if ($vazados.Count -gt 0 -and $reaperVivo) {
+    Write-Output "ATENCAO: $($vazados.Count) container(s) alem de $ThresholdMinutes min, mas o reaper (ryuk) esta VIVO."
+    Write-Output 'Suite longa em andamento ou runner pendurado - nao e o vazamento classico de reaper morto.'
+} elseif ($vazados.Count -gt 0) {
+    Write-Output "VAZAMENTO ATIVO: $($vazados.Count) container(s) de Testcontainers rodando ha mais de $ThresholdMinutes min, SEM reaper."
     $vazados | Sort-Object -Property IdadeMin -Descending |
         Format-Table -Property Nome, IdadeMin, Imagem -AutoSize | Out-String -Width 200 | Write-Output
     Write-Output 'Encerramento e remocao sao decisoes do dono da suite; este script nao executa nada.'
@@ -117,6 +128,12 @@ else {
 
 if ($emTeste.Count -gt 0) {
     Write-Output "Em teste dentro do limiar: $($emTeste.Count) container(s) recentes, presumidos legitimos."
+}
+
+if ($reaperVivo) {
+    Write-Output 'Reaper (ryuk): VIVO - ha sessao de Testcontainers segurando a limpeza automatica.'
+} elseif (@($itens | Where-Object { $_.Situacao -eq 'running' }).Count -gt 0) {
+    Write-Output 'Reaper (ryuk): AUSENTE com efemeros em execucao - ninguem vai limpar sozinho.'
 }
 
 if ($parados.Count -gt 0) {

@@ -39,9 +39,12 @@ informada como "sem delta", não como zero.
 - **Containers `[SEM TETO de memoria]`** — o limite impresso pelo docker é a
   memória inteira da VM: é candidato a ganhar `cpus`/`mem_limit` no compose do
   projeto. Teto novo só vale após `docker compose up -d` (recriar).
-- **Vazamento de Testcontainers** — efêmeros de teste rodando fora de uma suíte
-  ativa são vazamento (15 SQL Servers ficaram 2h+ vivos em 03/08/2026). O
-  detalhe com limiar de idade sai de `scripts\report-testcontainers-leak.ps1`.
+- **Testcontainers com semântica de reaper** — `SUITE EM ANDAMENTO` (ryuk vivo:
+  a sessão de teste tem dono e limpa ao final) versus `VAZAMENTO CONFIRMADO`
+  (ryuk ausente com efêmeros rodando: a sessão morreu, como os 15 SQL Servers
+  que ficaram 2h+ vivos em 03/08/2026). Efêmero velho com ryuk vivo é suíte
+  longa ou runner pendurado — o limiar de idade sai de
+  `scripts\report-testcontainers-leak.ps1`.
 - **`.wslconfig`** — mostra memória, CPUs e swap declarados e se o
   `autoMemoryReclaim` está numa seção que o WSL desta versão aceita. Chave na
   seção errada é ignorada com aviso: teto declarado não é teto vigente.

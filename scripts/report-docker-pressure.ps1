@@ -107,11 +107,21 @@ if ($docker.RunningCount -gt 0) {
 
 if ($docker.TestcontainersCount -gt 0) {
     Write-Output ''
-    Write-Output ("VAZAMENTO POSSIVEL: {0} container(s) de Testcontainers em execucao:" -f $docker.TestcontainersCount)
+    if ($docker.RyukPresent) {
+        Write-Output ("SUITE EM ANDAMENTO: {0} efemero(s) de Testcontainers com o reaper (ryuk) vivo:" -f $docker.TestcontainersCount)
+    } else {
+        Write-Output ("VAZAMENTO CONFIRMADO: {0} efemero(s) de Testcontainers SEM reaper (ryuk ausente):" -f $docker.TestcontainersCount)
+    }
     foreach ($tc in $docker.Testcontainers) {
         Write-Output ('  {0}  (ha {1})' -f $tc.Name, $tc.RunningFor)
     }
+    if (-not $docker.RyukPresent) {
+        Write-Output 'A sessao de teste que os criou morreu; a remocao e decisao aprovada, fora deste script.'
+    }
     Write-Output 'Detalhe e limiar: pwsh -NoProfile -File .\scripts\report-testcontainers-leak.ps1'
+} elseif ($docker.RyukPresent) {
+    Write-Output ''
+    Write-Output 'Reaper (ryuk) vivo sem efemeros: sessao de Testcontainers ativa, entre containers.'
 }
 
 if ($null -ne $docker.DanglingVolumes -and $docker.DanglingVolumes -gt 0) {

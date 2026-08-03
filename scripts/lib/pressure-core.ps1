@@ -4001,6 +4001,7 @@ function Get-PressureDockerState {
     $runningCount = 0
     $danglingVolumes = $null
     $unboundedCount = $null
+    $ryukPresent = $false
     $probeOk = (
         -not $ProbeTimedOut -and
         $null -ne $Probe -and
@@ -4057,6 +4058,15 @@ function Get-PressureDockerState {
                 }
             }
         )
+        # O reaper carrega a mesma label dos efêmeros, mas conta outra história:
+        # ryuk vivo = sessão de teste com dono; ryuk ausente com efêmeros vivos
+        # = vazamento confirmado (a sessão morreu e ninguém limpou).
+        $ryukPresent = @(
+            $testcontainers | Where-Object { $_.Name -like 'testcontainers-ryuk-*' }
+        ).Count -gt 0
+        $testcontainers = @(
+            $testcontainers | Where-Object { $_.Name -notlike 'testcontainers-ryuk-*' }
+        )
         if ($Probe.ContainsKey('DanglingCount')) {
             $danglingVolumes = [int]$Probe.DanglingCount
         }
@@ -4109,6 +4119,14 @@ function Get-PressureDockerState {
         UnboundedCount = $unboundedCount
         TestcontainersCount = @($testcontainers).Count
         Testcontainers = $testcontainers
+        RyukPresent = $ryukPresent
+        TestcontainersVerdict = if (@($testcontainers).Count -gt 0 -and -not $ryukPresent) {
+            'vazamento'
+        } elseif (@($testcontainers).Count -gt 0 -or $ryukPresent) {
+            'suite-ativa'
+        } else {
+            'nenhum'
+        }
         DanglingVolumes = $danglingVolumes
         WslConfig = $WslConfig
         VhdxSizeGB = $VhdxSizeGB
@@ -4414,6 +4432,19 @@ function ConvertTo-PressureHistoryRecord {
         scanning = [bool]$Snapshot.Defender.ScanInProgress
         avIoMBps = [double]$Snapshot.Defender.EngineIoMBps
         avCpu = [double]$Snapshot.Defender.EngineCpuPercent
+        # Docker é o outro agente que já derrubou esta máquina (03/08/2026):
+        # sem estes campos, o histórico não responde se a VM e os containers
+        # participavam do episódio. Nulo continua sendo ausência, não zero.
+        dkState = if ($null -ne $Snapshot.Docker) { [string]$Snapshot.Docker.EngineState } else { '' }
+        dkVmCores = if ($null -ne $Snapshot.Docker) { $Snapshot.Docker.VmmemCores } else { $null }
+        dkVmMB = if ($null -ne $Snapshot.Docker -and $null -ne $Snapshot.Docker.VmmemWorkingSetMB) {
+            [double]$Snapshot.Docker.VmmemWorkingSetMB
+        } else {
+            $null
+        }
+        dkRun = if ($null -ne $Snapshot.Docker) { [int]$Snapshot.Docker.RunningCount } else { 0 }
+        dkTc = if ($null -ne $Snapshot.Docker) { [int]$Snapshot.Docker.TestcontainersCount } else { 0 }
+        dkRyuk = if ($null -ne $Snapshot.Docker) { [bool]$Snapshot.Docker.RyukPresent } else { $false }
         top = $top
     }
 }
@@ -5206,8 +5237,50 @@ function Get-PressureSnapshot {
     } else {
         $null
     }
+    $dockerState = $State.DockerState
+    $vmCoreLimit = if ($null -ne $dockerState -and $null -ne $dockerState.WslConfig -and
+        $null -ne $dockerState.WslConfig.Processors) {
+        [int]$dockerState.WslConfig.Processors
+    } else {
+        [int]$State.LogicalProcessorCount
+    }
+    $vmCoreAlert = [math]::Max(3, [math]::Ceiling($vmCoreLimit * 0.75))
+    $dockerInsight = if ($null -ne $dockerState -and $dockerState.EngineState -eq 'afogado') {
+        [pscustomobject]@{
+            Resource = 'docker'
+            Level = 3
+            Title = 'Motor do Docker afogado'
+            Narrative = 'A CLI não respondeu dentro do prazo da sondagem. Não empilhe carga nova em containers; o caminho de socorro é wsl --shutdown, com aprovação nominal. Em 03/08/2026 esse silêncio era o sintoma do travamento.'
+            Evidence = 'Sondagem em processo filho com prazo; a leitura ausente vira estado próprio, nunca zero containers.'
+            AttributionConfidence = 'alta'
+            CauseConfidence = 'alta'
+        }
+    } elseif ($null -ne $dockerState -and $dockerState.TestcontainersVerdict -eq 'vazamento') {
+        [pscustomobject]@{
+            Resource = 'docker'
+            Level = 3
+            Title = "$($dockerState.TestcontainersCount) efêmero(s) de Testcontainers sem reaper"
+            Narrative = 'O ryuk não está na listagem: a sessão de teste que criou esses containers morreu e eles seguem consumindo a VM. Remoção é decisão aprovada; o detalhe sai de report-testcontainers-leak.ps1.'
+            Evidence = 'Label org.testcontainers em execução com testcontainers-ryuk ausente.'
+            AttributionConfidence = 'alta'
+            CauseConfidence = 'alta'
+        }
+    } elseif ($null -ne $dockerState -and $null -ne $dockerState.VmmemCores -and
+        [double]$dockerState.VmmemCores -ge $vmCoreAlert) {
+        [pscustomobject]@{
+            Resource = 'docker'
+            Level = 2
+            Title = "VM do WSL2 usa $($dockerState.VmmemCores) núcleo(s) de $vmCoreLimit"
+            Narrative = "$($dockerState.RunningCount) container(s) em execução disputam a VM. O host preserva os processadores fora do teto, mas o que roda dentro dela está enfileirado."
+            Evidence = 'Delta de CPU do processo vmmem entre sondagens do coletor Docker.'
+            AttributionConfidence = 'alta'
+            CauseConfidence = 'média'
+        }
+    } else {
+        $null
+    }
     $insights = @(
-        @($terminalInsight) + @($baseInsights) |
+        @($terminalInsight) + @($dockerInsight) + @($baseInsights) |
             Where-Object { $null -ne $_ } |
             Select-Object -First 5
     )

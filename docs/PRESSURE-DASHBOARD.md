@@ -353,9 +353,17 @@ recurso zerado:
 - o consumo por container vem do `docker stats`; limite de memória igual ao
   total da VM denuncia container **sem teto**, candidato a `cpus`/`mem_limit`
   no compose do projeto;
-- containers com a label `org.testcontainers` em execução aparecem como
-  possível vazamento de suíte de teste; o detalhe com limiar de idade sai de
+- containers com a label `org.testcontainers` são interpretados junto com o
+  **reaper**: ryuk vivo = suíte em andamento (informativo); ryuk ausente com
+  efêmeros rodando = **vazamento confirmado** — a sessão de teste morreu e
+  ninguém vai limpar sozinho. O detalhe com limiar de idade sai de
   `scripts\report-testcontainers-leak.ps1`;
+- motor afogado, vazamento sem reaper e VM usando ≥75% dos processadores do
+  teto entram nos **Insights** da área — o card mostra o dado, o insight grita;
+- o registro do histórico local ganha os campos `dk*` (estado do motor,
+  núcleos e MB da VM, containers, efêmeros, reaper): um episódio futuro
+  responde se o Docker participava, como os campos de varredura já respondem
+  pelo antimalware;
 - o painel lê o `.wslconfig` e avisa quando `autoMemoryReclaim` está numa seção
   que o WSL desta versão ignora — teto declarado não é teto vigente;
 - o tamanho do VHDX de dados vem do arquivo no host. Ele nunca encolhe sozinho:

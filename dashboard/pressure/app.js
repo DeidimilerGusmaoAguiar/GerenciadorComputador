@@ -798,13 +798,24 @@
       });
     }
     if (docker.TestcontainersCount > 0) {
+      const ryukAlive = docker.RyukPresent === true;
       items.push({
-        level: 3,
-        title: "Efêmeros de teste em execução",
+        level: ryukAlive ? 1 : 4,
+        title: ryukAlive ? "Suíte de testes em andamento" : "Efêmeros de teste SEM reaper",
         value: `${docker.TestcontainersCount}`,
         detail:
           (docker.Testcontainers || []).map((tc) => tc.Name).slice(0, 5).join(", ") +
-          " — vazamento se persistirem depois da suíte",
+          (ryukAlive
+            ? " — ryuk vivo limpa ao final; vira vazamento se sobrarem depois da suíte"
+            : " — ryuk ausente: a sessão de teste morreu e os containers ficaram, consumindo a VM"),
+        source: "label org.testcontainers + presença do ryuk"
+      });
+    } else if (docker.RyukPresent === true) {
+      items.push({
+        level: 0,
+        title: "Reaper de testes de plantão",
+        value: "ryuk vivo",
+        detail: "Sessão de Testcontainers ativa, entre containers no momento.",
         source: "label org.testcontainers"
       });
     }
