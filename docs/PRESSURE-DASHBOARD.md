@@ -342,9 +342,12 @@ containers, o motor afogou e o `docker ps` parou de responder). O coletor
 aplica ao Docker a mesma regra do resto do painel — leitura ausente não é
 recurso zerado:
 
-- **afogado é estado de primeira classe**: CLI sem resposta dentro do prazo
-  vira o estado `afogado`, com a orientação de não empilhar carga nova — nunca
-  uma lista vazia de containers;
+- **afogado e lento são estados de primeira classe**: a sonda roda por etapas,
+  do barato ao caro (`ps` → efêmeros → volumes → `stats`) e aproveita o que
+  concluiu no estouro do prazo. Nem o `ps` respondeu = `afogado` (não empilhar
+  carga nova); `ps` respondeu e o `stats` estourou = `lento` (daemon sob carga
+  — os containers aparecem com consumo "sem leitura", que é ausência, não
+  zero). Nunca uma lista vazia;
 - com o Docker **desligado**, nenhuma CLI é chamada e o custo da seção é zero;
 - a sondagem roda num **processo filho com prazo de 8 s** e cadência própria
   (padrão 30 s, dobrada quando o motor afoga), porque um `docker.exe` pendurado

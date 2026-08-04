@@ -43,7 +43,7 @@ $docker = $state.DockerState
 # Segunda sondagem so quando ha motor respondendo: e ela que da o delta de CPU
 # da VM. Motor afogado nao ganha segunda chance aqui — cada tentativa custa o
 # prazo inteiro, e o estado ja esta provado.
-if ($null -ne $docker -and $docker.EngineState -in @('ocioso', 'ativo')) {
+if ($null -ne $docker -and $docker.EngineState -in @('ocioso', 'ativo', 'lento')) {
     Start-Sleep -Seconds $SampleSeconds
     $state.DockerRefreshAt = [datetime]::MinValue
     Update-PressureDockerState -State $state
@@ -98,10 +98,14 @@ if ($docker.RunningCount -gt 0) {
         } else {
             ''
         }
-        Write-Output (
-            '  {0,-30} {1,6:N1}% CPU  {2,8:N0} MB{3}' -f
-            $container.Name, ($container.CpuPercent ?? 0), ($container.MemoryMB ?? 0), $teto
-        )
+        if ($null -eq $container.CpuPercent) {
+            Write-Output ('  {0,-30} sem leitura de consumo (sonda lenta - ausencia, nao zero)' -f $container.Name)
+        } else {
+            Write-Output (
+                '  {0,-30} {1,6:N1}% CPU  {2,8:N0} MB{3}' -f
+                $container.Name, $container.CpuPercent, ($container.MemoryMB ?? 0), $teto
+            )
+        }
     }
 }
 

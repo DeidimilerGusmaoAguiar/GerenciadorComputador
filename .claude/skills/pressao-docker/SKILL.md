@@ -33,9 +33,12 @@ informada como "sem delta", não como zero.
 ## Como ler o resultado
 
 - **Estado do motor** — `DESLIGADO` (sem processos, nenhuma CLI é chamada),
-  `OCIOSO`, `ATIVO` (containers rodando, consumo listado por container) ou
-  `AFOGADO` (a CLI não respondeu no prazo). Afogado pede socorro, não paciência:
-  o caminho é `wsl --shutdown`, que exige aprovação nominal do dono da máquina.
+  `OCIOSO`, `ATIVO` (containers rodando, consumo listado por container),
+  `LENTO` (o `ps` responde mas o `stats` estoura o orçamento — daemon sob
+  carga: os containers aparecem com consumo "sem leitura", que é ausência, não
+  zero; remédio é paciência e menos carga) ou `AFOGADO` (nem o `ps` respondeu
+  no prazo). Afogado pede socorro, não paciência: o caminho é `wsl --shutdown`,
+  que exige aprovação nominal do dono da máquina.
 - **Containers `[SEM TETO de memoria]`** — o limite impresso pelo docker é a
   memória inteira da VM: é candidato a ganhar `cpus`/`mem_limit` no compose do
   projeto. Teto novo só vale após `docker compose up -d` (recriar).

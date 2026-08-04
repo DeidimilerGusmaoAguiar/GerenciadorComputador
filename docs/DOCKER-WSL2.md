@@ -378,9 +378,13 @@ permanecer), com `--filter until=` para preservar o recente
 
 Regras que valem para qualquer ferramenta que observe o Docker:
 
-- **Estados explícitos**: desligado / ocioso / ativo / **afogado**. O afogado
-  existe como estado de primeira classe, com cara de alarme — nunca como lista
-  vazia.
+- **Estados explícitos**: desligado / ocioso / ativo / **lento** / **afogado**.
+  A sonda roda por etapas, do barato ao caro (`ps` → efêmeros → volumes →
+  `stats`), e aproveita o parcial no estouro: **`ps` respondido com `stats`
+  estourado = lento** (daemon suando — criação de containers, build, I/O);
+  **nem o `ps` = afogado**. Os dois têm cara de alarme — nunca de lista vazia —
+  mas pedem remédios diferentes: lento pede paciência e menos carga; afogado
+  pede socorro.
 - **Toda chamada de CLI com prazo**, executada de forma abortável (processo
   filho que pode ser morto). Um `docker.exe` pendurado num daemon afogado não
   responde a cancelamento educado — e é justamente nesse momento que o painel

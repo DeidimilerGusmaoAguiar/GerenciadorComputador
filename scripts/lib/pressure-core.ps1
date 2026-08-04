@@ -4002,71 +4002,101 @@ function Get-PressureDockerState {
     $danglingVolumes = $null
     $unboundedCount = $null
     $ryukPresent = $false
+    $hasPs = (
+        $null -ne $Probe -and $Probe.ContainsKey('PsOk') -and $Probe.PsOk -eq $true
+    )
+    $hasStats = (
+        $null -ne $Probe -and $Probe.ContainsKey('StatsOk') -and $Probe.StatsOk -eq $true
+    )
+    $hasTc = (
+        $null -ne $Probe -and $Probe.ContainsKey('TcOk') -and $Probe.TcOk -eq $true
+    )
     $probeOk = (
-        -not $ProbeTimedOut -and
-        $null -ne $Probe -and
-        $Probe.ContainsKey('Ok') -and
-        $Probe.Ok -eq $true
+        $null -ne $Probe -and $Probe.ContainsKey('Ok') -and $Probe.Ok -eq $true
     )
 
-    if ($probeOk) {
+    if ($hasPs) {
         $runningCount = @($Probe.Running).Count
         $memoryCapMB = if ($null -ne $WslConfig -and $null -ne $WslConfig.MemoryGB) {
             [double]$WslConfig.MemoryGB * 1024
         } else {
             $null
         }
-        $containers = @(
-            foreach ($linha in @($Probe.Stats)) {
-                $parte = [string]$linha -split '\|', 3
-                if ($parte.Count -lt 3) { continue }
-                $memParte = [string]$parte[2] -split '/', 2
-                $usedMB = ConvertFrom-PressureDockerSize -Text $memParte[0]
-                $limitMB = if ($memParte.Count -gt 1) {
-                    ConvertFrom-PressureDockerSize -Text $memParte[1]
-                } else {
-                    $null
+        $containers = if (-not $hasStats) {
+            # A sonda estourou antes do stats: nomes são conhecidos, consumo é
+            # AUSENTE — nulo, nunca zero.
+            @(
+                foreach ($nome in @($Probe.Running)) {
+                    if ([string]::IsNullOrWhiteSpace([string]$nome)) { continue }
+                    [pscustomobject]@{
+                        Name = [string]$nome
+                        CpuPercent = $null
+                        MemoryMB = $null
+                        MemoryLimitMB = $null
+                        Unbounded = $null
+                    }
                 }
-                # Sem mem_limit, o docker imprime a memória total da VM como
-                # limite: encostar nesse valor identifica container sem teto.
-                $unbounded = if ($null -ne $memoryCapMB -and $null -ne $limitMB) {
-                    $limitMB -ge ($memoryCapMB * 0.85)
-                } else {
-                    $null
-                }
-                [pscustomobject]@{
-                    Name = [string]$parte[0]
-                    CpuPercent = if ($parte[1] -match '(?<n>[\d.]+)') {
-                        [math]::Round([double]$Matches.n, 1)
+            )
+        } else {
+            @(
+                foreach ($linha in @($Probe.Stats)) {
+                    $parte = [string]$linha -split '\|', 3
+                    if ($parte.Count -lt 3) { continue }
+                    $memParte = [string]$parte[2] -split '/', 2
+                    $usedMB = ConvertFrom-PressureDockerSize -Text $memParte[0]
+                    $limitMB = if ($memParte.Count -gt 1) {
+                        ConvertFrom-PressureDockerSize -Text $memParte[1]
                     } else {
                         $null
                     }
-                    MemoryMB = $usedMB
-                    MemoryLimitMB = $limitMB
-                    Unbounded = $unbounded
+                    # Sem mem_limit, o docker imprime a memória total da VM como
+                    # limite: encostar nesse valor identifica container sem teto.
+                    $unbounded = if ($null -ne $memoryCapMB -and $null -ne $limitMB) {
+                        $limitMB -ge ($memoryCapMB * 0.85)
+                    } else {
+                        $null
+                    }
+                    [pscustomobject]@{
+                        Name = [string]$parte[0]
+                        CpuPercent = if ($parte[1] -match '(?<n>[\d.]+)') {
+                            [math]::Round([double]$Matches.n, 1)
+                        } else {
+                            $null
+                        }
+                        MemoryMB = $usedMB
+                        MemoryLimitMB = $limitMB
+                        Unbounded = $unbounded
+                    }
                 }
-            }
-        )
-        $unboundedCount = @($containers | Where-Object { $_.Unbounded -eq $true }).Count
-        $testcontainers = @(
-            foreach ($linha in @($Probe.Testcontainers)) {
-                $parte = [string]$linha -split '\|', 2
-                if ($parte.Count -lt 1 -or [string]::IsNullOrWhiteSpace($parte[0])) { continue }
-                [pscustomobject]@{
-                    Name = [string]$parte[0]
-                    RunningFor = if ($parte.Count -gt 1) { [string]$parte[1] } else { '' }
+            )
+        }
+        $unboundedCount = if ($hasStats) {
+            @($containers | Where-Object { $_.Unbounded -eq $true }).Count
+        } else {
+            $null
+        }
+        if ($hasTc) {
+            $testcontainers = @(
+                foreach ($linha in @($Probe.Testcontainers)) {
+                    $parte = [string]$linha -split '\|', 2
+                    if ($parte.Count -lt 1 -or [string]::IsNullOrWhiteSpace($parte[0])) { continue }
+                    [pscustomobject]@{
+                        Name = [string]$parte[0]
+                        RunningFor = if ($parte.Count -gt 1) { [string]$parte[1] } else { '' }
+                    }
                 }
-            }
-        )
-        # O reaper carrega a mesma label dos efêmeros, mas conta outra história:
-        # ryuk vivo = sessão de teste com dono; ryuk ausente com efêmeros vivos
-        # = vazamento confirmado (a sessão morreu e ninguém limpou).
-        $ryukPresent = @(
-            $testcontainers | Where-Object { $_.Name -like 'testcontainers-ryuk-*' }
-        ).Count -gt 0
-        $testcontainers = @(
-            $testcontainers | Where-Object { $_.Name -notlike 'testcontainers-ryuk-*' }
-        )
+            )
+            # O reaper carrega a mesma label dos efêmeros, mas conta outra
+            # história: ryuk vivo = sessão de teste com dono; ryuk ausente com
+            # efêmeros vivos = vazamento confirmado (a sessão morreu e ninguém
+            # limpou).
+            $ryukPresent = @(
+                $testcontainers | Where-Object { $_.Name -like 'testcontainers-ryuk-*' }
+            ).Count -gt 0
+            $testcontainers = @(
+                $testcontainers | Where-Object { $_.Name -notlike 'testcontainers-ryuk-*' }
+            )
+        }
         if ($Probe.ContainsKey('DanglingCount')) {
             $danglingVolumes = [int]$Probe.DanglingCount
         }
@@ -4074,8 +4104,10 @@ function Get-PressureDockerState {
 
     $engineState = if (-not $EngineProcessesPresent) {
         'desligado'
-    } elseif ($ProbeTimedOut) {
+    } elseif ($ProbeTimedOut -and -not $hasPs) {
         'afogado'
+    } elseif ($ProbeTimedOut) {
+        'lento'
     } elseif (-not $probeOk) {
         'indisponivel'
     } elseif ($runningCount -gt 0) {
@@ -4086,8 +4118,13 @@ function Get-PressureDockerState {
     $detail = switch ($engineState) {
         'desligado' { 'Docker Desktop sem processos; nenhuma CLI foi chamada.' }
         'afogado' {
-            "O motor não respondeu em $ProbeTimeoutSeconds s. Leitura ausente não é " +
+            "Nem o docker ps respondeu em $ProbeTimeoutSeconds s. Leitura ausente não é " +
             'recurso zerado: em 03/08/2026 esse silêncio era o próprio sintoma.'
+        }
+        'lento' {
+            "O básico responde, mas a sonda completa estourou $ProbeTimeoutSeconds s — " +
+            "daemon sob carga (criação de containers, build ou I/O). " +
+            "$runningCount container(s) conhecidos; consumo por container sem leitura nesta sonda."
         }
         'indisponivel' {
             $motivo = if ($null -ne $Probe -and $Probe.ContainsKey('Error') -and $Probe.Error) {
@@ -4117,10 +4154,13 @@ function Get-PressureDockerState {
         RunningCount = $runningCount
         Containers = $containers
         UnboundedCount = $unboundedCount
+        StatsRead = $hasStats
         TestcontainersCount = @($testcontainers).Count
         Testcontainers = $testcontainers
         RyukPresent = $ryukPresent
-        TestcontainersVerdict = if (@($testcontainers).Count -gt 0 -and -not $ryukPresent) {
+        TestcontainersVerdict = if (-not $hasTc) {
+            'sem-leitura'
+        } elseif (@($testcontainers).Count -gt 0 -and -not $ryukPresent) {
             'vazamento'
         } elseif (@($testcontainers).Count -gt 0 -or $ryukPresent) {
             'suite-ativa'
@@ -4198,49 +4238,58 @@ function Update-PressureDockerState {
         if ($null -eq $cli) {
             $probe = @{ Ok = $false; Error = 'CLI docker não encontrada no PATH.' }
         } else {
+            # A sonda emite cada etapa assim que conclui, do mais barato ao mais
+            # caro (ps -> efemeros -> volumes -> stats). No estouro do prazo, o
+            # que ja saiu e aproveitado: ps respondido com stats estourado e um
+            # daemon SUANDO (estado 'lento'), nao um daemon morto ('afogado').
             $job = Start-Job -ScriptBlock {
-                $resultado = @{ Ok = $false; Error = '' }
-                try {
-                    $running = @(docker ps --format '{{.Names}}' 2>$null)
-                    if ($LASTEXITCODE -ne 0) {
-                        $resultado.Error = 'docker ps retornou erro.'
-                        return $resultado
-                    }
-                    $stats = @()
-                    if ($running.Count -gt 0) {
-                        $stats = @(
-                            docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>$null
-                        )
-                    }
-                    $testcontainers = @(
-                        docker ps --filter 'label=org.testcontainers=true' --format '{{.Names}}|{{.RunningFor}}' 2>$null
+                $running = @(docker ps --format '{{.Names}}' 2>$null)
+                if ($LASTEXITCODE -ne 0) {
+                    @{ Stage = 'erro'; Error = 'docker ps retornou erro.' }
+                    return
+                }
+                @{ Stage = 'ps'; Running = $running }
+                $testcontainers = @(
+                    docker ps --filter 'label=org.testcontainers=true' --format '{{.Names}}|{{.RunningFor}}' 2>$null
+                )
+                @{ Stage = 'tc'; Testcontainers = $testcontainers }
+                $dangling = @(docker volume ls -q -f dangling=true 2>$null)
+                @{ Stage = 'volumes'; DanglingCount = @($dangling).Count }
+                $stats = @()
+                if ($running.Count -gt 0) {
+                    $stats = @(
+                        docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}' 2>$null
                     )
-                    $dangling = @(docker volume ls -q -f dangling=true 2>$null)
-                    $resultado.Ok = $true
-                    $resultado.Running = $running
-                    $resultado.Stats = $stats
-                    $resultado.Testcontainers = $testcontainers
-                    $resultado.DanglingCount = @($dangling).Count
-                } catch {
-                    $resultado.Error = [string]$_.Exception.Message
                 }
-                $resultado
+                @{ Stage = 'stats'; Stats = $stats }
+                @{ Stage = 'fim' }
             }
-            if (Wait-Job -Job $job -Timeout $probeTimeoutSeconds) {
-                try {
-                    $probe = Receive-Job -Job $job -ErrorAction Stop
-                    if ($probe -is [object[]]) { $probe = $probe[-1] }
-                    if ($probe -isnot [hashtable]) {
-                        $probe = @{ Ok = $false; Error = 'sondagem devolveu formato inesperado.' }
-                    }
-                } catch {
-                    $probe = @{ Ok = $false; Error = [string]$_.Exception.Message }
-                }
-            } else {
+            $timedOut = -not (Wait-Job -Job $job -Timeout $probeTimeoutSeconds)
+            if ($timedOut) {
                 Stop-Job -Job $job
-                $timedOut = $true
+            }
+            $etapas = @()
+            try {
+                $etapas = @(Receive-Job -Job $job -ErrorAction Stop)
+            } catch {
+                $etapas = @(@{ Stage = 'erro'; Error = [string]$_.Exception.Message })
             }
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+            $probe = @{ Ok = $false; PsOk = $false; StatsOk = $false; TcOk = $false; Error = '' }
+            foreach ($etapa in $etapas) {
+                if ($etapa -isnot [hashtable] -or -not $etapa.ContainsKey('Stage')) { continue }
+                switch ([string]$etapa.Stage) {
+                    'erro' { $probe.Error = [string]$etapa.Error }
+                    'ps' { $probe.PsOk = $true; $probe.Running = $etapa.Running }
+                    'tc' { $probe.TcOk = $true; $probe.Testcontainers = $etapa.Testcontainers }
+                    'volumes' { $probe.DanglingCount = $etapa.DanglingCount }
+                    'stats' { $probe.StatsOk = $true; $probe.Stats = $etapa.Stats }
+                    'fim' { $probe.Ok = $true }
+                }
+            }
+            if (-not $timedOut -and -not $probe.Ok -and [string]::IsNullOrEmpty([string]$probe.Error)) {
+                $probe.Error = 'sondagem terminou sem concluir as etapas.'
+            }
         }
     }
 
@@ -5264,6 +5313,16 @@ function Get-PressureSnapshot {
             Evidence = 'Label org.testcontainers em execução com testcontainers-ryuk ausente.'
             AttributionConfidence = 'alta'
             CauseConfidence = 'alta'
+        }
+    } elseif ($null -ne $dockerState -and $dockerState.EngineState -eq 'lento') {
+        [pscustomobject]@{
+            Resource = 'docker'
+            Level = 2
+            Title = 'Motor do Docker lento sob carga'
+            Narrative = "O docker ps responde, mas a sonda completa estoura o prazo — daemon ocupado (criação de containers, build ou I/O pesado). $($dockerState.RunningCount) container(s) conhecidos, consumo por container sem leitura."
+            Evidence = 'Sonda por etapas: ps concluiu dentro do orçamento; stats não.'
+            AttributionConfidence = 'alta'
+            CauseConfidence = 'média'
         }
     } elseif ($null -ne $dockerState -and $null -ne $dockerState.VmmemCores -and
         [double]$dockerState.VmmemCores -ge $vmCoreAlert) {

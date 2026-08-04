@@ -735,6 +735,7 @@
       desligado: "desligado",
       ocioso: "ocioso",
       ativo: `${docker.RunningCount} container(s)`,
+      lento: `${docker.RunningCount} container(s) — LENTO`,
       afogado: "AFOGADO",
       indisponivel: "indisponível"
     };
@@ -784,17 +785,21 @@
       .sort((a, b) => (b.CpuPercent || 0) - (a.CpuPercent || 0))
       .slice(0, 6);
     for (const container of containers) {
-      const cpu = container.CpuPercent ?? 0;
+      const hasCpu = container.CpuPercent !== null && container.CpuPercent !== undefined;
+      const cpu = hasCpu ? container.CpuPercent : 0;
       const unbounded = container.Unbounded === true;
       items.push({
-        level: cpu >= 150 || (unbounded && cpu >= 80) ? 3 : cpu >= 80 || unbounded ? 2 : 0,
+        level: hasCpu
+          ? cpu >= 150 || (unbounded && cpu >= 80) ? 3 : cpu >= 80 || unbounded ? 2 : 0
+          : 1,
         title: container.Name,
-        value: `${formatNumber(cpu, 1)}% CPU`,
-        detail:
-          `${formatNumber(container.MemoryMB ?? 0, 0)} MB` +
-          (container.MemoryLimitMB ? ` / ${formatNumber(container.MemoryLimitMB, 0)} MB` : "") +
-          (unbounded ? " — sem teto de memória" : ""),
-        source: "docker stats"
+        value: hasCpu ? `${formatNumber(cpu, 1)}% CPU` : "sem leitura",
+        detail: hasCpu
+          ? `${formatNumber(container.MemoryMB ?? 0, 0)} MB` +
+            (container.MemoryLimitMB ? ` / ${formatNumber(container.MemoryLimitMB, 0)} MB` : "") +
+            (unbounded ? " — sem teto de memória" : "")
+          : "consumo não medido nesta sonda (daemon lento) — ausência, não zero",
+        source: hasCpu ? "docker stats" : "docker ps (stats estourou o orçamento)"
       });
     }
     if (docker.TestcontainersCount > 0) {
