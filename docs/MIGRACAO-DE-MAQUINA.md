@@ -96,6 +96,23 @@ Nos três perfis maiores, os transcripts `.jsonl` sozinhos eram **1,76 GB** cont
 > precisa viajar é o **mapa de qual conta usa qual perfil** — e essa informação
 > costuma não estar em lugar nenhum.
 
+### Materialize esse mapa em perfis do terminal
+
+Se o usuário mantém várias sessões da mesma CLI em contas diferentes, o mapa não
+deve viver só num documento: vire **um perfil de terminal por identidade**, cada
+um com diretório inicial e cor de aba próprios. O atalho passa a escolher a conta,
+e some a chance de abrir a conta errada no repositório errado — que é o mesmo erro
+que carimba e-mail corporativo em repositório pessoal.
+
+Duas cautelas ao criar esses perfis:
+
+- **Não restaure o arquivo de perfis da máquina antiga por cima.** Ele carrega
+  perfis de software que a máquina nova não tem; eles aparecem no menu e não abrem
+  nada. Confirme que cada diretório inicial existe **antes** de escrever.
+- **O perfil herda o que o atalho já fazia.** Se a função invocada acrescenta uma
+  flag que desliga confirmação de permissão, agora são N atalhos nascendo assim.
+  Ganhar conveniência é fácil; o que se multiplica junto costuma passar batido.
+
 ---
 
 ## 5. Descubra a rota antes de precisar dela
@@ -147,6 +164,11 @@ Duas conclusões da varredura remota nasceram erradas por serem uma foto:
 **Pergunte ao sistema, não ao caminho:** use `Get-Command` em vez de `Test-Path`
 em diretório fixo. E, ao concluir que falta algo na máquina remota, **confirme
 antes de agir**.
+
+O mesmo vale para saber se um processo subiu. Uma CLI instalada por gerenciador
+de pacotes de runtime pode rodar como **executável próprio**, não como o runtime:
+procurar o nome do interpretador na lista de processos dá **falso negativo**, e a
+conclusão "não iniciou" nasce errada. Procure o **filho do shell** que a lançou.
 
 ---
 
@@ -258,7 +280,49 @@ fechar — trocar credencial no meio de um teste mistura duas causas de erro.
 
 ---
 
-## 15. Sequência que funcionou
+## 15. O clone na máquina nova nasce velho
+
+Com as duas máquinas trabalhando no mesmo dia, um repositório clonado de manhã já
+não representa o remoto à tarde. Um guia publicado pela máquina de origem **depois**
+do clone simplesmente não existe no destino — e a leitura natural é "não foi
+enviado", quando o que faltou foi atualizar.
+
+Vale para qualquer repositório de apoio que as duas máquinas editam durante a
+migração: **antes de concluir que algo não subiu, olhe `HEAD..origin/main`.**
+
+> **Armadilha do diagnóstico:** `git fetch --dry-run` mostra o que viria e **não
+> move as referências locais**. O `merge --ff-only` seguinte responde *"Already up
+> to date"* mesmo havendo commit novo, porque o `origin/<branch>` local continua
+> onde estava. Quem usa o `--dry-run` para investigar e o merge para corrigir
+> conclui que não há nada — e há. Faça o `fetch` de verdade.
+
+---
+
+## 16. O mapa da máquina tem prazo de validade
+
+Uma migração que vale a pena documentar produz um arquivo que diz **onde se está**:
+papel de cada máquina, o que já foi feito nela, o que é proibido ali. Ele é lido no
+começo de toda sessão — por pessoas e por agentes — e por isso é o documento cujo
+envelhecimento custa mais caro.
+
+O mapa escrito no dia da chegada descrevia o destino como *"nada de desenvolvimento
+está instalado"*, e trazia a regra derivada *"nunca restaure configuração de um
+programa que ainda não foi instalado"*. **Um dia depois o ambiente inteiro estava
+instalado e validado.** A regra, antes prudente, passou a barrar trabalho legítimo:
+quem a lê recusa restaurar configuração de software que está bem ali.
+
+Um mapa errado é pior que mapa nenhum: ausência de informação faz perguntar, e
+informação desatualizada faz agir com confiança na direção errada.
+
+**Como fazer:** escreva o estado como afirmação verificável, não como narrativa
+("recebida ontem", "em transformação"). E defina o gatilho de reescrita pelo
+**evento, não pelo calendário** — a primeira fase concluída já invalida o mapa de
+chegada. Se o arquivo tem campo de data, trate divergência entre a data e o estado
+real como defeito.
+
+---
+
+## 17. Sequência que funcionou
 
 1. **Monitorar sem congelar.** O dono continua trabalhando; o inventário roda
    quantas vezes for preciso e mostra o delta entre execuções.
@@ -285,4 +349,8 @@ fechar — trocar credencial no meio de um teste mistura duas causas de erro.
 - [ ] Verificar quem depende antes de instalar "porque estava lá"
 - [ ] Definir dono de cada documento entre as duas máquinas
 - [ ] Validar compilando e subindo, não conferindo se instalou
+- [ ] Atualizar o repositório de apoio no destino (`HEAD..origin/<branch>`) antes
+      de concluir que algo não foi enviado
+- [ ] Reescrever o mapa das máquinas quando a primeira fase fechar, não quando a
+      migração acabar
 - [ ] Apagar o pacote da origem e rotacionar o que for token de servidor
