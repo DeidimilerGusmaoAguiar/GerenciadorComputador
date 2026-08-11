@@ -48,6 +48,23 @@ registro e artefatos fora do repositório.
 - Use caminhos relativos ao repositório na documentação e nos testes.
 - `reports\`, `quarantine\` e `local\` contêm dados locais ignorados pelo Git.
 
+## Identificação da máquina
+
+Este repositório é usado em mais de um computador, e o que vale num não vale
+no outro. **Antes de agir, saiba onde está.**
+
+1. Identifique o host por `$env:COMPUTERNAME` no início da sessão.
+2. Se existir `local\maquinas.json`, leia-o e siga o perfil daquele host:
+   papel da máquina, o que já foi feito nela, e o que é proibido ali.
+3. Host ausente do mapa é **host desconhecido**: trabalhe somente em leitura e
+   pergunte ao usuário antes da primeira alteração no sistema.
+4. Nunca presuma que caminho, perfil de CLI, serviço, credencial ou volume
+   observado numa máquina existe em outra. Verifique no host atual.
+5. Ao terminar um trabalho que mude o estado de uma máquina, atualize o mapa.
+
+O mapa é local e ignorado pelo Git: ele nomeia hosts e diretórios reais, que
+não pertencem ao repositório público. Sem o arquivo, valem os itens 1, 3 e 4.
+
 ## Gate crítico de Terminal e CLIs
 
 Antes de qualquer alteração no host:
