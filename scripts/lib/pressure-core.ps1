@@ -4299,10 +4299,19 @@ function Update-PressureDockerState {
         $vhdxSizeGB = [math]::Round((Get-Item -LiteralPath $vhdxPath).Length / 1GB, 1)
     }
 
+    # Measure-Object com -Property nao emite objeto algum para colecao vazia, e
+    # sob StrictMode o .Sum ausente vira erro. Com o Docker desligado a sonda
+    # inteira morria aqui, derrubando junto o gravador de historico.
+    $engineMemoryMB = if ($engineProcs.Count -gt 0) {
+        [double](($engineProcs | Measure-Object WorkingSet64 -Sum).Sum) / 1MB
+    } else {
+        0.0
+    }
+
     $State.DockerState = Get-PressureDockerState `
         -EngineProcessesPresent ($engineProcs.Count -gt 0) `
         -EngineProcessCount $engineProcs.Count `
-        -EngineMemoryMB ([double](($engineProcs | Measure-Object WorkingSet64 -Sum).Sum) / 1MB) `
+        -EngineMemoryMB $engineMemoryMB `
         -Vmmem $vmmem `
         -Probe $probe `
         -ProbeTimedOut $timedOut `
@@ -5261,11 +5270,20 @@ function Get-PressureSnapshot {
             (Get-PressureBaseProcessName -Name ([string]$_.Name)) -eq 'msmpeng'
         }
     )
+    # Mesma armadilha do bloco do Docker: sem processo de antimalware vivo a
+    # colecao fica vazia e o .Sum nao existe.
+    $antimalwareIoMBps = 0.0
+    $antimalwareCpuPercent = 0.0
+    if ($antimalwareProcesses.Count -gt 0) {
+        $antimalwareIoMBps = [double](($antimalwareProcesses | Measure-Object IoTotalMBps -Sum).Sum)
+        $antimalwareCpuPercent = [double](($antimalwareProcesses | Measure-Object CpuPercent -Sum).Sum)
+    }
+
     $defender = Get-PressureDefenderState `
         -Status $State.DefenderStatus `
         -Preference $State.DefenderPreference `
-        -EngineIoMBps ([double](($antimalwareProcesses | Measure-Object IoTotalMBps -Sum).Sum)) `
-        -EngineCpuPercent ([double](($antimalwareProcesses | Measure-Object CpuPercent -Sum).Sum)) `
+        -EngineIoMBps $antimalwareIoMBps `
+        -EngineCpuPercent $antimalwareCpuPercent `
         -CliHomes @($State.CliHomes) `
         -ScanProcess $State.DefenderScanProcess
     $baseInsights = Get-PressureInsights `
