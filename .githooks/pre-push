@@ -14,13 +14,31 @@
 #     git push --no-verify
 set -e
 
-if command -v pwsh >/dev/null 2>&1; then
-    shell_exe=pwsh
-elif command -v powershell >/dev/null 2>&1; then
-    shell_exe=powershell
-else
-    echo "pre-push: PowerShell nao encontrado - a suite publica NAO foi executada." >&2
-    echo "          Instale o pwsh ou use --no-verify assumindo o risco." >&2
+# A suite exige PowerShell 7: usa [IO.Path]::GetRelativePath, que nao existe no
+# .NET Framework do powershell.exe 5.1. Entao 5.1 NAO serve de reserva.
+#
+# E nao basta achar "pwsh" no PATH. Se o PowerShell veio da Loja (MSIX), o que
+# esta no PATH e' um alias de 0 byte que so ativa em sessao interativa - medido
+# em 20/08/2026, quando ele funcionou por uma hora e depois passou a devolver
+# "O sistema nao pode executar o programa especificado". Por isso a instalacao
+# real vem primeiro, e qualquer candidato de 0 byte e' descartado (-s).
+shell_exe=""
+for candidato in \
+    "/c/Program Files/PowerShell/7/pwsh.exe" \
+    "/c/Program Files/PowerShell/7-preview/pwsh.exe"
+do
+    if [ -s "$candidato" ]; then shell_exe="$candidato"; break; fi
+done
+
+if [ -z "$shell_exe" ] && command -v pwsh >/dev/null 2>&1; then
+    candidato=$(command -v pwsh)
+    if [ -s "$candidato" ]; then shell_exe="$candidato"; fi
+fi
+
+if [ -z "$shell_exe" ]; then
+    echo "pre-push: PowerShell 7 nao encontrado - a suite publica NAO foi executada." >&2
+    echo "          Um alias de 0 byte da Loja nao serve, e o 5.1 tambem nao." >&2
+    echo "          Instale o pacote oficial, ou use --no-verify assumindo o risco." >&2
     exit 1
 fi
 

@@ -371,11 +371,24 @@ Duas armadilhas de linguagem que custaram execuções inteiras:
 - **Função com nome de executável se chama a si mesma.** Uma função `Winget`
   que executa `& winget` recursa até estourar: o PowerShell resolve função antes
   de comando externo. Use o nome completo (`winget.exe`).
-Sobre o MSIX, medido em 20/08/2026: o interpretador instalado pela loja
-aparece no PATH apenas como um alias de 0 byte, um ponto de reanálise que
-não ativa em sessão 0 — mas o executável real, dentro do diretório do pacote,
-roda normalmente quando chamado por caminho completo. "MSIX não funciona" é
-forte demais: o que não funciona é o alias.
+Sobre o MSIX, medido em 20/08/2026 e **corrigido no mesmo dia**: o
+interpretador instalado pela loja aparece no PATH apenas como um alias de 0
+byte, um ponto de reanálise que não ativa fora de sessão interativa. O
+executável real, dentro do diretório do pacote, chegou a rodar por caminho
+completo — e **parou de rodar uma hora depois**, sem que nada fosse instalado
+ou desinstalado: passou a devolver *"O sistema não pode executar o programa
+especificado"*, e a criação direta por WMI passou a negar acesso. O que mudou
+no meio foi o estado da sessão interativa da máquina.
+
+A lição não é "chame o executável real": é que **aplicativo em pacote não é
+base confiável para automação sem sessão**. Se um runtime precisa ser chamado
+por processo remoto, instale o pacote clássico. Vale conferir na chegada:
+runtime que só existe como alias da loja é dívida esperando a primeira
+automação.
+
+O mesmo vale para o que depende dele. Um hook que procura o interpretador no
+PATH encontra o alias e falha em silêncio — descarte candidato de 0 byte
+explicitamente e prefira o caminho da instalação real.
 
 - **`$args` é variável automática.** Usá-la como array próprio para *splatting*
   faz o comando rodar sem parâmetro nenhum, e o erro aparece longe da causa.
