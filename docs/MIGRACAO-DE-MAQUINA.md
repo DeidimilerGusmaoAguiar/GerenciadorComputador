@@ -397,7 +397,47 @@ E uma de leitura: **não decida sucesso pelo texto da saída.** Mensagem
 localizada chega com codificação trocada e a comparação nunca casa — sucessos
 viram "falha" no log. Decida por **código de saída** e confirme **em disco**.
 
-## 19. Sequência que funcionou
+## 19. Pasta criada não é dado copiado
+
+O pacote de migração tinha uma pasta `05-navegador` com duas subpastas de nome
+correto. Dentro delas, **dois arquivos, somando 100 KB** — enquanto o perfil de
+origem tinha 579 MB no Chrome e 411 MB no Edge. O histórico, que é o que alguém
+realmente sente falta, nunca foi capturado.
+
+Ninguém errou o passo: o passo rodou, criou a estrutura, e não falhou. O que
+faltou foi **a medida que teria falhado se ele não tivesse funcionado**.
+
+É o mesmo defeito de "existir não é estar em uso", visto do outro lado: ali um
+arquivo existia e não valia nada; aqui uma pasta existe e não contém nada. Nos
+dois casos, presença foi confundida com conteúdo.
+
+A auditoria do pacote inteiro — contar arquivos e bytes por pasta e comparar com
+a origem — levou menos de um minuto e apontou o único passo vazio entre cinco.
+Faça isso **antes** de formatar a origem, não depois.
+
+| Passo | Arquivos | Tamanho | Veredito |
+|---|---|---|---|
+| dados | 492 | 304 MB | consistente |
+| sensível | 154 | 251 MB | consistente |
+| perfis de CLI | 3.560 | 202 MB | consistente |
+| configuração | 17 | 0,2 MB | consistente: são arquivos pequenos por natureza |
+| **navegador** | **2** | **0,1 MB** | **vazio — origem tinha ~1 GB** |
+
+Tamanho pequeno não é sintoma por si só: a pasta de configuração tem 17 arquivos
+e 200 KB, e está completa. O sintoma é **a razão entre origem e pacote**.
+
+### O que de navegador não atravessa, faça o que fizer
+
+Histórico, favoritos, autofill, atalhos e ícones são arquivos comuns: copiam bem.
+**Senhas salvas e sessões logadas não.** A chave que as decifra fica no
+`Local State`, protegida pela API de proteção de dados do Windows, amarrada ao
+par usuário + máquina. Copiada para outro computador, a chave não decifra.
+
+Não insista no arquivo: contas voltam entrando na conta do navegador e deixando
+a sincronização trazer de volta. Prometer "leva tudo do navegador" é promessa
+que o sistema operacional não deixa cumprir.
+
+## 20. Sequência que funcionou
 
 1. **Monitorar sem congelar.** O dono continua trabalhando; o inventário roda
    quantas vezes for preciso e mostra o delta entre execuções.
