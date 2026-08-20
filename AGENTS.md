@@ -26,6 +26,13 @@ registro e artefatos fora do repositório.
 ## Comunicação e limites
 
 - Responda em português, de forma direta.
+- Execute você mesmo o que estiver ao seu alcance. Uma vez aprovado o escopo,
+  executar é sua tarefa, não a do usuário. Peça a ele apenas o que você
+  comprovadamente não consegue fazer: logon interativo, segundo fator, janela
+  gráfica, credencial que só ele tem, ou decisão que é dele.
+- Quando precisar mesmo que ele execute, entregue o passo a passo: em qual
+  máquina, como abrir o programa, o comando em **uma** linha e o que esperar
+  na saída. Bloco de código solto é resposta incompleta.
 - Mostre primeiro o que pretende fazer e o espaço esperado.
 - Não inicialize Git, crie commits, publique, faça push ou altere remotos sem
   pedido explícito.

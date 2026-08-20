@@ -361,7 +361,8 @@ medir. Mas o processo nasce de um **logon de rede**, que não tem sessão de log
 
 | Sintoma | Causa real | Contorno |
 |---|---|---|
-| Comando sai sem saída **e sem código de erro** | ativação de pacote MSIX | chame o `.exe` clássico, ou baixe o instalador |
+| Comando sai sem saída **e sem código de erro** | o alias do pacote MSIX é um arquivo de 0 byte, e a ativação não acontece fora de sessão interativa | chame o executável real dentro do diretório do pacote, por caminho completo |
+| `Win32_Process.Create` devolve `9`, *Path Not Found* | o PATH herdado na sessão 0 não é o da sessão do dono | chame tudo por caminho absoluto, nunca pelo nome do comando |
 | `A specified logon session does not exist` | DPAPI / Gerenciador de Credenciais | evite o helper; use credencial explícita, ou adie para a sessão do dono |
 | Instalador ignora argumentos | array passado a `Start-Process` não cita caminho com espaço | passe **uma** string, com o caminho entre aspas |
 
@@ -370,6 +371,12 @@ Duas armadilhas de linguagem que custaram execuções inteiras:
 - **Função com nome de executável se chama a si mesma.** Uma função `Winget`
   que executa `& winget` recursa até estourar: o PowerShell resolve função antes
   de comando externo. Use o nome completo (`winget.exe`).
+Sobre o MSIX, medido em 20/08/2026: o interpretador instalado pela loja
+aparece no PATH apenas como um alias de 0 byte, um ponto de reanálise que
+não ativa em sessão 0 — mas o executável real, dentro do diretório do pacote,
+roda normalmente quando chamado por caminho completo. "MSIX não funciona" é
+forte demais: o que não funciona é o alias.
+
 - **`$args` é variável automática.** Usá-la como array próprio para *splatting*
   faz o comando rodar sem parâmetro nenhum, e o erro aparece longe da causa.
 
