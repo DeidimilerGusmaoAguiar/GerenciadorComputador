@@ -14,3 +14,6 @@
 .gitattributes text eol=lf
 .gitignore text eol=lf
 .geminiignore text eol=lf
+
+# Hooks sao executados por sh, mesmo no Windows: CRLF quebra o shebang
+.githooks/* text eol=lf

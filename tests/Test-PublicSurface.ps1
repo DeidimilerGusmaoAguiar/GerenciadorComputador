@@ -35,6 +35,7 @@ $requiredPaths = @(
     'CLAUDE.md',
     'GEMINI.md',
     '.geminiignore',
+    '.githooks\pre-push',
     'docs\AI-CLI.md',
     'docs\MEMORY.md',
     'docs\PRESSURE-DASHBOARD.md',
@@ -423,7 +424,9 @@ foreach ($file in $powerShellFiles) {
 }
 
 $publicFiles = [Collections.Generic.List[IO.FileInfo]]::new()
-foreach ($directory in @('scripts', '.claude', '.github', 'dashboard', 'docs', 'tests')) {
+foreach ($directory in @(
+    'scripts', '.claude', '.github', '.githooks', 'dashboard', 'docs', 'tests'
+)) {
     $path = Join-Path $repoRoot $directory
     if (Test-Path -LiteralPath $path) {
         foreach ($file in Get-ChildItem -LiteralPath $path -Recurse -File) {
@@ -462,6 +465,67 @@ $credentialPatterns = @(
     [regex]::new('(?i)-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----')
 )
 
+
+# Nome de maquina, de usuario de dominio e de projeto interno nao cabem numa
+# lista fixa: eles mudam, e escreve-los aqui ja seria o vazamento que a regra
+# proibe. Saem entao de fontes em local\, ignorada pelo Git.
+#
+# A regra existe no AGENTS.md e no CONTRIBUTING.md desde o inicio - este bloco
+# e' o primeiro que a confere. Sem ele, em 20/08/2026 um script entrou com tres
+# nomes de maquina reais no cabecalho e a suite passou sem reclamar.
+$localTerms = [Collections.Generic.HashSet[string]]::new(
+    [StringComparer]::OrdinalIgnoreCase
+)
+$localTermSources = [Collections.Generic.List[string]]::new()
+
+if ($env:COMPUTERNAME) {
+    [void]$localTerms.Add($env:COMPUTERNAME)
+    $localTermSources.Add('COMPUTERNAME')
+}
+
+$machineMapPath = Join-Path $repoRoot 'local\maquinas.json'
+if (Test-Path -LiteralPath $machineMapPath) {
+    try {
+        $machineMap = Get-Content -LiteralPath $machineMapPath -Raw |
+            ConvertFrom-Json
+        if ($machineMap.PSObject.Properties.Name -contains 'maquinas') {
+            foreach ($entry in $machineMap.maquinas.PSObject.Properties) {
+                # So a chave, que e' o nome da maquina. Os outros campos do
+                # mapa sao texto livre: derivar termo deles trouxe 'Users'
+                # junto e reprovou nove arquivos legitimos. Nome de usuario
+                # e de projeto entram por termos-proibidos.txt, onde alguem
+                # os escreve de proposito.
+                [void]$localTerms.Add($entry.Name)
+            }
+        }
+        $localTermSources.Add('local\maquinas.json')
+    } catch {
+        $localTermSources.Add('local\maquinas.json (ILEGIVEL)')
+    }
+}
+
+$extraTermsPath = Join-Path (Join-Path $repoRoot 'local') 'termos-proibidos.txt'
+if (Test-Path -LiteralPath $extraTermsPath) {
+    foreach ($line in (Get-Content -LiteralPath $extraTermsPath)) {
+        $term = $line.Trim()
+        if ($term -and -not $term.StartsWith('#')) {
+            [void]$localTerms.Add($term)
+        }
+    }
+    $localTermSources.Add('local\termos-proibidos.txt')
+}
+
+# Termo de tres caracteres ou menos casa dentro de palavra comum e transforma a
+# conferencia em ruido; melhor nao conferir do que conferir errado.
+$localTermPatterns = @(
+    foreach ($term in $localTerms) {
+        if ($term.Length -lt 4) { continue }
+        [regex]::new(
+            '(?i)(?<![A-Za-z0-9])' + [regex]::Escape($term) + '(?![A-Za-z0-9])'
+        )
+    }
+)
+
 foreach ($file in $publicFiles) {
     $relativePath = [IO.Path]::GetRelativePath($repoRoot, $file.FullName)
     $content = [IO.File]::ReadAllText($file.FullName)
@@ -481,6 +545,11 @@ foreach ($file in $publicFiles) {
         Assert-PublicCondition `
             -Condition (-not $pattern.IsMatch($content)) `
             -Message "Possivel credencial em $relativePath"
+    }
+    foreach ($pattern in $localTermPatterns) {
+        Assert-PublicCondition `
+            -Condition (-not $pattern.IsMatch($content)) `
+            -Message "Termo local (maquina, usuario ou projeto) em $relativePath"
     }
 }
 
@@ -507,4 +576,6 @@ if ($failures.Count -gt 0) {
     Checks = $checks
     PowerShellFiles = $powerShellFiles.Count
     PublicFiles = $publicFiles.Count
+    LocalTerms = $localTerms.Count
+    LocalTermSources = @($localTermSources)
 } | ConvertTo-Json -Depth 3

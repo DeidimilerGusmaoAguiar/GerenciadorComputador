@@ -17,6 +17,18 @@ portabilidade e segurança.
 pwsh -NoProfile -File .\tests\Test-PublicSurface.ps1
 ```
 
+6. Ative o hook de `pre-push` uma vez por clone, para que essa conferência
+   rode sozinha antes de cada push. Hook não viaja no clone:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+A conferência inclui nomes de máquina e termos internos lidos de `local\`,
+que o Git ignora — a lista de termos proibidos não pode ela mesma ser
+publicada. Sem esses arquivos a suíte confere apenas o host atual, e informa
+em `LocalTermSources` de onde tirou a lista.
+
 ## Scripts que alteram o sistema
 
 Novos scripts mutáveis devem ter:

@@ -199,6 +199,17 @@ documentação de agentes:
 pwsh -NoProfile -File .\tests\Test-PublicSurface.ps1
 ```
 
+O mesmo teste roda como hook de `pre-push`. Ative uma vez por clone — hook não
+viaja no clone, e máquina nova nasce sem ele:
+
+```powershell
+git config core.hooksPath .githooks
+```
+
+Os nomes de máquina e termos internos que não podem vazar vêm de
+`local\maquinas.json` e `local\termos-proibidos.txt`, ignorados pelo Git. Ao
+descobrir um termo novo, acrescente-o ali — não ao teste.
+
 Uma tarefa está pronta quando:
 
 - a sintaxe PowerShell e as configurações passam;

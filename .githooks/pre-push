@@ -1,0 +1,38 @@
+#!/bin/sh
+# Confere a superficie publica antes de deixar o push sair.
+#
+# Existe porque a regra ja estava escrita em tres lugares - AGENTS.md
+# ("nao ha caminho pessoal, referencia corporativa ou credencial"),
+# CONTRIBUTING.md ("remova nomes de usuario, empresa, projeto, host...") e a
+# definicao de pronto - e nenhum deles conferia nada. Em 20/08/2026 um script
+# entrou com tres nomes de maquina reais no cabecalho e a suite passou.
+#
+# ATIVE UMA VEZ POR CLONE. Hook nao viaja no clone:
+#     git config core.hooksPath .githooks
+#
+# Para pular conscientemente:
+#     git push --no-verify
+set -e
+
+if command -v pwsh >/dev/null 2>&1; then
+    shell_exe=pwsh
+elif command -v powershell >/dev/null 2>&1; then
+    shell_exe=powershell
+else
+    echo "pre-push: PowerShell nao encontrado - a suite publica NAO foi executada." >&2
+    echo "          Instale o pwsh ou use --no-verify assumindo o risco." >&2
+    exit 1
+fi
+
+repo_root=$(git rev-parse --show-toplevel)
+
+echo "pre-push: conferindo a superficie publica..."
+if "$shell_exe" -NoProfile -File "$repo_root/tests/Test-PublicSurface.ps1"; then
+    exit 0
+fi
+
+echo "" >&2
+echo "pre-push: push BLOQUEADO pela conferencia de superficie publica." >&2
+echo "          Corrija os itens acima. Se a falha comprovadamente nao se" >&2
+echo "          aplica, repita com --no-verify." >&2
+exit 1
