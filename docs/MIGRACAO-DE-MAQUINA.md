@@ -496,7 +496,48 @@ túnel ativo, rota. Um `500` de banco de dados pode não ter nada a ver com o
 banco, com a aplicação, nem com a migração — e você vai passar horas dentro do
 código antes de olhar para fora dele.
 
-## 23. Sequência que funcionou
+## 23. O que a criptografia moderna recusa a migrar
+
+Nem tudo que existe na origem pode ir para o destino, e alguns bloqueios são de
+projeto — feitos para impedir exatamente a cópia que uma migração tenta fazer.
+Reconhecê-los cedo evita horas de tentativa inútil.
+
+**Cofre de senhas do navegador.** Chrome (v127+) e Edge cifram o cofre com uma
+chave protegida por *App-Bound Encryption*: a chave fica presa à máquina por um
+serviço de elevação que roda como SYSTEM. Copiar `Login Data` e `Local State`,
+mesmo levando junto a chave-mestra DPAPI do usuário, **não funciona** — a marca
+delatora é o campo `app_bound_encrypted_key` no `Local State`. Caminhos que
+funcionam: a sincronização de conta (se as senhas foram salvas *na conta*, não
+*só neste dispositivo*), ou exportar CSV na origem e importar no destino. O
+import aceita linha de comando (`--import-password-file`, headless); o **export
+não** — exige confirmação biométrica presencial, de propósito.
+
+**Credenciais amarradas a usuário + máquina por DPAPI.** Identidade do Visual
+Studio (`%LOCALAPPDATA%\.IdentityService`), tokens de aplicativo, senha salva em
+pool de aplicação do IIS. Todas se recriam por login, não por cópia. Não gaste
+tempo tentando transportar o arquivo; transporte a *conta* e refaça o login.
+
+A regra geral: **se um segredo protege contra cópia entre máquinas, a migração é
+uma cópia entre máquinas.** Trate esses itens como "refazer no destino", não como
+"levar da origem", e liste-os explicitamente para o dono — são sempre trabalho
+dele, porque exigem a credencial que só ele tem.
+
+## 24. Quem está sentado onde muda o roteiro
+
+Numa migração assistida remotamente, o dono pode estar na máquina **nova**,
+alcançando a **antiga** por acesso remoto — o inverso do que o roteiro presume.
+Um script escrito "para rodar na origem" e deixado no Desktop da origem falha com
+*"não reconhecido como script"* quando o dono o executa na máquina onde está
+sentado, que é a outra.
+
+Antes de pedir que o dono rode algo, **descubra onde ele está**: a sessão
+interativa (processo `explorer.exe`, sessão RDP/AnyDesk ativa) revela a máquina
+física. E há uma alavanca que isso destrava: se o agente compartilha a sessão
+interativa da máquina-alvo (mesmo `SessionId` do `explorer`), ele pode abrir
+janela visível ali — e o dono, olhando por acesso remoto, só confirma a
+biometria. A parte que exige presença encolhe para um toque.
+
+## 25. Sequência que funcionou
 
 1. **Monitorar sem congelar.** O dono continua trabalhando; o inventário roda
    quantas vezes for preciso e mostra o delta entre execuções.
