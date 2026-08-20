@@ -437,7 +437,28 @@ Não insista no arquivo: contas voltam entrando na conta do navegador e deixando
 a sincronização trazer de volta. Prometer "leva tudo do navegador" é promessa
 que o sistema operacional não deixa cumprir.
 
-## 20. Sequência que funcionou
+## 20. A cópia fiel leva o defeito junto
+
+O perfil do shell foi para a máquina nova byte a byte: mesmo tamanho, mesmo
+hash, mesma data de modificação. Fidelidade perfeita — e foi ali que um defeito
+antigo apareceu pela primeira vez.
+
+O perfil define um atalho que injeta uma opção obrigatória na chamada de uma
+ferramenta. Quem digitasse a opção junto, ainda mais errado, recebia
+`unknown option` e a sessão morria antes de começar. O defeito existia na origem
+havia meses. Ninguém tinha notado, porque na origem ninguém digitava a opção — o
+hábito já estava formado. Na máquina nova, o hábito ainda não existia.
+
+**Máquina nova é o melhor detector de defeito antigo que você vai ter.** O que
+aparecer nos primeiros dias lá quase nunca é regressão da migração: é dívida que
+estava escondida atrás do costume. Trate como achado, não como estrago.
+
+E corrija nos dois lados mais o pacote. Um atalho que injeta uma opção deve
+tolerar que a opção venha digitada — inclusive digitada errado — em vez de
+repassar e deixar o programa recusar. Injeção que não é idempotente é armadilha
+esperando a primeira digitação.
+
+## 21. Sequência que funcionou
 
 1. **Monitorar sem congelar.** O dono continua trabalhando; o inventário roda
    quantas vezes for preciso e mostra o delta entre execuções.
