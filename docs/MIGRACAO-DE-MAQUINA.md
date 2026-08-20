@@ -458,7 +458,45 @@ tolerar que a opção venha digitada — inclusive digitada errado — em vez de
 repassar e deixar o programa recusar. Injeção que não é idempotente é armadilha
 esperando a primeira digitação.
 
-## 21. Sequência que funcionou
+## 21. Compare o destino com a origem, não com o ideal
+
+Ao testar a máquina nova, oito de setenta e quatro verificações falharam. A
+reação natural é caçar oito defeitos de migração. Antes disso, rodei os **mesmos
+testes na máquina de origem**, que ainda estava de pé.
+
+Sete das oito falhavam exatamente igual lá.
+
+Eram condições preexistentes — credencial vencida em pool de aplicação, uma API
+que já respondia com erro havia semanas — que ninguém notava porque ninguém
+exercitava aqueles caminhos. A migração não as causou; ela apenas as tornou
+visíveis, porque pela primeira vez alguém testou tudo de uma vez.
+
+**Enquanto a origem existe, ela é o gabarito.** Depois que ela for formatada,
+você perde a única forma barata de distinguir "quebrou na mudança" de "já estava
+assim". Guarde a saída dos testes da origem **antes** de desligá-la: vale mais
+que qualquer documento.
+
+E cuidado com o inverso: sete falhas iguais não significam sete problemas
+resolvidos. Significam sete problemas que continuam existindo, agora com dono
+conhecido.
+
+## 22. O endereço de saída faz parte do ambiente
+
+Uma API subia na origem e falhava no destino com erro de banco. Mesma versão,
+mesma configuração, mesmos arquivos — conferidos byte a byte. A diferença estava
+fora da máquina: o firewall do banco libera por **endereço de origem**, e as duas
+máquinas saíam por endereços diferentes.
+
+A causa era a VPN, que na máquina nova tinha a interface aberta e o túnel
+derrubado. O processo da interface gráfica estava lá; o processo do túnel, não.
+Presença de programa não é presença de conexão.
+
+Ao migrar, trate o caminho de saída como item de inventário: endereço público,
+túnel ativo, rota. Um `500` de banco de dados pode não ter nada a ver com o
+banco, com a aplicação, nem com a migração — e você vai passar horas dentro do
+código antes de olhar para fora dele.
+
+## 23. Sequência que funcionou
 
 1. **Monitorar sem congelar.** O dono continua trabalhando; o inventário roda
    quantas vezes for preciso e mostra o delta entre execuções.
