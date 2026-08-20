@@ -160,6 +160,25 @@ Limpeza:
 4. execução por categoria com log;
 5. nova medição e conferência dos PIDs protegidos.
 
+## Runbook e inventário antigo são hipótese, não verdade
+
+Documento de migração, checklist e mapa de máquina descrevem o que era verdade
+quando foram escritos. Máquina de trabalho muda em dias.
+
+1. Antes de executar um runbook, **verifique as afirmações factuais dele**
+   contra a máquina atual:
+
+   ```powershell
+   pwsh -NoProfile -File .\scripts\Test-RunbookClaims.ps1 -Esperado <json de afirmacoes>
+   ```
+
+2. Ao repetir um número, versão, caminho ou lista que veio de documento, diga de
+   onde veio e **confirme antes de agir**. "O runbook diz X" não é evidência.
+3. Ao encontrar afirmação desatualizada, **corrija o documento na hora**, com a
+   data e o que foi medido. Não basta contornar em silêncio.
+4. **Existir não é o mesmo que estar em uso.** Arquivo de configuração intocado
+   há anos, com só o conteúdo de fábrica, é ruído — não é estado a migrar.
+
 ## Relatórios e dados locais
 
 Relatórios formais ficam em `reports\<tipo>_<YYYY-MM-DD_HHmm>.md` e incluem

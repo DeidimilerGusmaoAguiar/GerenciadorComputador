@@ -322,7 +322,62 @@ real como defeito.
 
 ---
 
-## 17. Sequência que funcionou
+## 17. O runbook envelhece mais rápido que a máquina
+
+Um runbook escrito para a migração anterior foi reaproveitado dez dias depois.
+**Seis afirmações dele já eram falsas**: mandava instalar uma versão de IDE que
+não estava mais em uso, esperava uma distro de WSL que não existia, mandava
+restaurar um volume de container já removido, falava em quatro imagens locais
+quando restara uma, e errava a contagem de credenciais e de extensões do editor.
+
+Nenhuma quebrou nada sozinha. Cada uma custou tempo — e uma delas só apareceu
+porque o dono desconfiou de uma frase.
+
+**O erro de método:** tratar o documento como fonte e a máquina como
+confirmação. É o contrário. O documento é hipótese datada; a máquina é a fonte.
+
+**O conserto:** um verificador que pergunta à máquina e imprime lado a lado o
+que o documento afirma e o que a máquina responde, antes de qualquer execução.
+Divergência vira item de correção do documento, não contorno silencioso.
+
+### O caso mais instrutivo: existir não é estar em uso
+
+O runbook mandava levar um arquivo de configuração de servidor web local,
+prometendo que ele "traz os sites de dev". O arquivo existia. Só que era o
+template de fábrica, intocado por **dois anos e meio**, declarando um único site
+de exemplo. O servidor em questão estava instalado apenas como dependência de
+outra ferramenta, e o trabalho real acontecia no servidor completo, com dezenas
+de pools.
+
+Ao inventariar, não pergunte "existe?". Pergunte **"foi modificado?"** e
+**"tem conteúdo próprio?"**. Data de modificação e contagem de itens não-padrão
+separam estado real de ruído.
+
+## 18. Automação remota sem sessão interativa tem limites duros
+
+Administrar uma máquina remota por WMI/DCOM funciona bem para instalar, copiar e
+medir. Mas o processo nasce de um **logon de rede**, que não tem sessão de logon
+— e três classes de coisa quebram ali, sempre em silêncio:
+
+| Sintoma | Causa real | Contorno |
+|---|---|---|
+| Comando sai sem saída **e sem código de erro** | ativação de pacote MSIX | chame o `.exe` clássico, ou baixe o instalador |
+| `A specified logon session does not exist` | DPAPI / Gerenciador de Credenciais | evite o helper; use credencial explícita, ou adie para a sessão do dono |
+| Instalador ignora argumentos | array passado a `Start-Process` não cita caminho com espaço | passe **uma** string, com o caminho entre aspas |
+
+Duas armadilhas de linguagem que custaram execuções inteiras:
+
+- **Função com nome de executável se chama a si mesma.** Uma função `Winget`
+  que executa `& winget` recursa até estourar: o PowerShell resolve função antes
+  de comando externo. Use o nome completo (`winget.exe`).
+- **`$args` é variável automática.** Usá-la como array próprio para *splatting*
+  faz o comando rodar sem parâmetro nenhum, e o erro aparece longe da causa.
+
+E uma de leitura: **não decida sucesso pelo texto da saída.** Mensagem
+localizada chega com codificação trocada e a comparação nunca casa — sucessos
+viram "falha" no log. Decida por **código de saída** e confirme **em disco**.
+
+## 19. Sequência que funcionou
 
 1. **Monitorar sem congelar.** O dono continua trabalhando; o inventário roda
    quantas vezes for preciso e mostra o delta entre execuções.
