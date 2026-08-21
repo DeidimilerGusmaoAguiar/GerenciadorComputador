@@ -38,7 +38,9 @@
 [CmdletBinding()]
 param(
     [string]$Esperado,
-    [switch]$Json
+    [switch]$Json,
+    [ValidateRange(3, 300)]
+    [int]$TimeoutSegundos = 20
 )
 
 Set-StrictMode -Version Latest
@@ -51,20 +53,81 @@ function Get-Fato {
         NUNCA escreve; se falhar, o fato vira '(indisponivel)' em vez de
         derrubar a checagem inteira - maquina de destino costuma estar pela
         metade, e abortar no primeiro buraco esconde os outros.
+
+        Cada medicao roda com TETO DE TEMPO e imprime o resultado assim que
+        fica pronto. Isso nasceu de um travamento real: em 21/08/2026 o script
+        ficou 28 minutos sem emitir uma linha numa maquina saudavel. Como a
+        tabela so era impressa no fim, nao havia como saber em qual fato ele
+        tinha parado - e a ferramenta que o AGENTS.md manda rodar ANTES de
+        tudo virou o proprio bloqueio da sessao.
+
+        Uma medicao que estoura o teto vira '(tempo esgotado)', que e'
+        diferente de '(indisponivel)': a primeira e' um fato que a maquina se
+        recusou a responder a tempo, a segunda e' um fato que ela nao tem.
+        Confundir os dois faz voce procurar defeito onde nao ha.
     #>
     param(
         [Parameter(Mandatory)][string]$Id,
         [Parameter(Mandatory)][string]$Pergunta,
-        [Parameter(Mandatory)][scriptblock]$Medir
+        [Parameter(Mandatory)][scriptblock]$Medir,
+        [int]$Teto = 20,
+        [switch]$Silencioso
     )
+
+    if (-not $Silencioso) { Write-Host ("  medindo {0,-24}" -f $Id) -NoNewline -ForegroundColor DarkGray }
+
     $valor = '(indisponivel)'
-    try {
-        $r = & $Medir
-        if ($null -ne $r -and "$r".Trim()) { $valor = ($r -join ', ').Trim() }
-        elseif ($null -ne $r) { $valor = "$r" }
+    $inicio = [Diagnostics.Stopwatch]::StartNew()
+
+    # Start-ThreadJob existe no PowerShell 7. Se faltar, mede direto - sem
+    # teto, mas sem quebrar: melhor um script lento do que um script ausente.
+    $temThreadJob = [bool](Get-Command Start-ThreadJob -ErrorAction SilentlyContinue)
+
+    if ($temThreadJob) {
+        $job = Start-ThreadJob -ScriptBlock $Medir
+        if (Wait-Job $job -Timeout $Teto) {
+            try {
+                $r = Receive-Job $job -ErrorAction Stop
+                if ($null -ne $r -and "$r".Trim()) { $valor = ($r -join ', ').Trim() }
+                elseif ($null -ne $r) { $valor = "$r" }
+            }
+            catch { $valor = '(indisponivel)' }
+        }
+        else { $valor = '(tempo esgotado)' }
+        Remove-Job $job -Force -ErrorAction SilentlyContinue
     }
-    catch { $valor = '(indisponivel)' }
-    [pscustomobject]@{ Id = $Id; Pergunta = $Pergunta; Maquina = $valor }
+    else {
+        try {
+            $r = & $Medir
+            if ($null -ne $r -and "$r".Trim()) { $valor = ($r -join ', ').Trim() }
+            elseif ($null -ne $r) { $valor = "$r" }
+        }
+        catch { $valor = '(indisponivel)' }
+    }
+
+    $inicio.Stop()
+    if (-not $Silencioso) {
+        $cor = if ($valor -eq '(tempo esgotado)') { 'Red' } else { 'DarkGray' }
+        Write-Host (" {0,6:N1}s  {1}" -f $inicio.Elapsed.TotalSeconds, $valor) -ForegroundColor $cor
+    }
+
+    [pscustomobject]@{
+        Id       = $Id
+        Pergunta = $Pergunta
+        Maquina  = $valor
+        Segundos = [math]::Round($inicio.Elapsed.TotalSeconds, 1)
+    }
+}
+
+# O teto e a verbosidade valem para TODAS as medicoes. Definidos aqui em vez de
+# repetidos em cada chamada: parametro esquecido numa linha e' exatamente como
+# um fato volta a travar a suite inteira sem ninguem perceber.
+$PSDefaultParameterValues['Get-Fato:Teto']       = $TimeoutSegundos
+$PSDefaultParameterValues['Get-Fato:Silencioso'] = [bool]$Json
+
+if (-not $Json) {
+    Write-Host ''
+    Write-Host ("Medindo a maquina (teto de {0}s por fato):" -f $TimeoutSegundos) -ForegroundColor Cyan
 }
 
 $fatos = @(
@@ -75,8 +138,17 @@ $fatos = @(
     }
 
     Get-Fato 'docker.volumes' 'Quais volumes o Docker tem?' {
-        @(& docker.exe volume ls --format '{{.Name}}' 2>&1 |
-            Where-Object { $_ -and $_ -notmatch '^[0-9a-f]{64}$' -and $_ -notmatch 'error|Cannot' })
+        # Decida pelo CODIGO DE SAIDA, nunca por filtrar palavra na mensagem.
+        # O filtro anterior descartava 'error|Cannot' e deixava passar
+        # "failed to connect to the docker API..." - que nao contem nenhuma das
+        # duas. A mensagem de erro entrava na tabela como se fosse a lista de
+        # volumes, e virava um DIVERGE inventado contra o runbook.
+        $saida = & docker.exe volume ls --format '{{.Name}}' 2>&1
+        if ($LASTEXITCODE -ne 0) { '(daemon do Docker parado)' }
+        else {
+            $v = @($saida | Where-Object { $_ -and $_ -notmatch '^[0-9a-f]{64}$' })
+            if ($v.Count) { $v } else { '(nenhum)' }
+        }
     }
 
     Get-Fato 'docker.imagens.suspeitas' 'Quais imagens podem ser build local (nao viajam por pull)?' {
@@ -86,10 +158,18 @@ $fatos = @(
         # Criterio honesto: repositorio SEM host de registro (sem ponto) e SEM
         # namespace (sem barra) e' candidato - inclui oficiais como 'redis',
         # entao o resultado pede confirmacao, nao e' veredito.
-        $c = @(& docker.exe image ls --format '{{.Repository}}' 2>&1 |
-               Where-Object { $_ -and $_ -notmatch '<none>|error' } |
+        #
+        # Confira o daemon ANTES de interpretar a lista. Com o motor parado, o
+        # filtro por nome descartava a mensagem de erro (ela tem ponto, logo
+        # casava com '[./]') e o fato respondia '(nenhuma sem namespace)' - uma
+        # resposta plausivel, bem formatada e FALSA. Medido em 21/08/2026.
+        # Silencio do daemon nao e' ausencia de imagem.
+        $saida = & docker.exe image ls --format '{{.Repository}}' 2>&1
+        if ($LASTEXITCODE -ne 0) { return '(daemon do Docker parado)' }
+        $c = @($saida |
+               Where-Object { $_ -and $_ -notmatch '<none>' } |
                Where-Object { $_ -notmatch '[./]' } | Sort-Object -Unique)
-        if ($c) { ($c -join ', ') + '  (conferir quais tem Dockerfile no repo: essas precisam de build, nao de pull)' }
+        if ($c.Count) { ($c -join ', ') + '  (conferir quais tem Dockerfile no repo: essas precisam de build, nao de pull)' }
         else { '(nenhuma sem namespace)' }
     }
 
