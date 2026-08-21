@@ -266,6 +266,29 @@ $fatos = @(
 )
 
 # ------------------------------------------------------------ comparacao
+
+function Get-ChaveComparacao {
+    <#
+        Muitos fatos sao LISTAS achatadas em texto separado por virgula, e a
+        ordem delas nao e' garantida: `vswhere`, `docker`, `nvm` e o registro
+        enumeram na ordem que quiserem. Comparar como string crua transforma
+        reordenacao em DIVERGE - foi assim que 'vs.edicoes' acusou divergencia
+        entre duas maquinas que tinham exatamente as mesmas edicoes instaladas.
+
+        Falso positivo custa caro aqui: este script existe para o agente
+        confiar nele antes de executar um runbook. Se ele grita sem motivo,
+        quem le aprende a ignora-lo - e ai ele nao serve para nada.
+
+        A chave normaliza para comparacao: quebra por virgula, tira espaco,
+        descarta vazio e ordena. O valor EXIBIDO continua sendo o original, na
+        ordem em que a maquina respondeu.
+    #>
+    param([string]$Valor)
+    if ([string]::IsNullOrWhiteSpace($Valor)) { return '' }
+    $partes = @($Valor -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    ($partes | Sort-Object) -join ', '
+}
+
 $saida = $fatos
 if ($Esperado) {
     if (-not (Test-Path -LiteralPath $Esperado)) { throw "Arquivo de afirmacoes nao encontrado: $Esperado" }
@@ -274,7 +297,7 @@ if ($Esperado) {
         $c = $claims.PSObject.Properties | Where-Object { $_.Name -eq $f.Id } | Select-Object -First 1
         $diz = if ($c) { "$($c.Value)" } else { '(runbook nao afirma)' }
         $status = if (-not $c) { '-' }
-                  elseif ("$($f.Maquina)".Trim() -eq $diz.Trim()) { 'CONFERE' }
+                  elseif ((Get-ChaveComparacao "$($f.Maquina)") -eq (Get-ChaveComparacao $diz)) { 'CONFERE' }
                   else { 'DIVERGE' }
         $f | Add-Member -NotePropertyName Runbook -NotePropertyValue $diz -PassThru |
              Add-Member -NotePropertyName Status -NotePropertyValue $status -PassThru
