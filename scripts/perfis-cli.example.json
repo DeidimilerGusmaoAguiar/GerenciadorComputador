@@ -1,31 +1,43 @@
 {
-  "version": 1,
+  "version": 2,
   "generatedBy": "scripts\\sync-cli-profiles.ps1 -Bootstrap",
   "note": "Exemplo sintetico versionado. O mapa real desta maquina fica em local\\perfis-cli.json, que o Git ignora.",
   "profiles": [
     {
       "cli": "claude",
-      "slug": "padrao",
-      "alias": "cc-padrao",
-      "label": "PADRAO",
-      "color": "Cyan",
-      "home": "D:\\perfis\\ana\\.claude"
+      "slug": "pessoal-aberto",
+      "label": "PESSOAL",
+      "color": "Yellow",
+      "home": "D:\\perfis\\ana\\.claude-pessoal",
+      "side": "pessoal",
+      "shield": "aberto"
     },
     {
       "cli": "claude",
-      "slug": "estudo",
-      "alias": "cc-estudo",
-      "label": "ESTUDO",
+      "slug": "pessoal-blindado",
+      "label": "PESSOAL BLINDADO",
       "color": "Yellow",
-      "home": "D:\\perfis\\ana\\.claude-estudo"
+      "home": "D:\\repos\\.claude-escopo-pessoal",
+      "side": "pessoal",
+      "shield": "blindado"
     },
     {
-      "cli": "codex",
-      "slug": "padrao",
-      "alias": "cc-padrao-codex",
-      "label": "PADRAO",
-      "color": "Green",
-      "home": "D:\\perfis\\ana\\.codex"
+      "cli": "claude",
+      "slug": "trabalho-aberto",
+      "label": "TRABALHO",
+      "color": "Cyan",
+      "home": "D:\\perfis\\ana\\.claude",
+      "side": "trabalho",
+      "shield": "aberto"
+    },
+    {
+      "cli": "claude",
+      "slug": "trabalho-blindado",
+      "label": "TRABALHO BLINDADO",
+      "color": "Cyan",
+      "home": "D:\\repos\\.claude-escopo-trabalho",
+      "side": "trabalho",
+      "shield": "blindado"
     },
     {
       "cli": "codex",
@@ -35,5 +47,74 @@
       "color": "Magenta",
       "home": "D:\\perfis\\ana\\.codex-estudo"
     }
+  ],
+  "routing": {
+    "claude": {
+      "defaultSide": "pessoal",
+      "flags": [],
+      "openZones": [
+        "D:\\repos\\projeto-a"
+      ],
+      "routes": [
+        {
+          "path": "D:\\repos\\projeto-a",
+          "side": "trabalho"
+        },
+        {
+          "path": "D:\\repos\\projeto-b",
+          "side": "trabalho"
+        }
+      ],
+      "warnPersonalUnder": [
+        "D:\\repos"
+      ],
+      "commands": {
+        "pessoal": [
+          "PlanoPessoal",
+          "Plano_Pessoal"
+        ],
+        "trabalho": [
+          "PlanoTrabalho",
+          "Plano_Trabalho"
+        ]
+      },
+      "statusCommand": "PlanoAtual",
+      "statusAliases": [
+        "Plano_Atual"
+      ],
+      "askCommand": "Planos",
+      "askAliases": []
+    }
+  },
+  "terminal": {
+    "managedGuids": [
+      "{11111111-1111-4111-8111-111111111111}",
+      "{22222222-2222-4222-8222-222222222222}"
+    ],
+    "tabs": [
+      {
+        "guid": "{11111111-1111-4111-8111-111111111111}",
+        "name": "Plano Pessoal",
+        "command": "claude",
+        "startingDirectory": "D:\\projetos",
+        "tabColor": "#B58900"
+      },
+      {
+        "guid": "{22222222-2222-4222-8222-222222222222}",
+        "name": "Planos (escolher)",
+        "command": "Planos",
+        "startingDirectory": "D:\\projetos",
+        "tabColor": "#8A6FBF"
+      }
+    ]
+  },
+  "legacyRegions": [
+    {
+      "start": "# ===== bloco antigo escrito a mao =====",
+      "end": "# ===== fim do bloco antigo ====="
+    }
+  ],
+  "ignore": [
+    "D:\\outro\\.gemini"
   ]
 }

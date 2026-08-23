@@ -91,6 +91,50 @@ function cli-perfil-b {
 Restaurar o valor anterior no `finally` evita que a sessão do terminal continue
 apontando para o perfil trocado depois que a CLI sai.
 
+### Quando o atalho é a pergunta errada
+
+Um atalho por diretório de estado funciona enquanto os perfis forem poucos e
+independentes. Ele começa a mentir quando duas perguntas diferentes se misturam
+no mesmo nome:
+
+- **qual conta paga a sessão** — pessoal, trabalho, um cliente;
+- **o que a sessão enxerga** — as skills, hooks e agents instalados no perfil do
+  usuário, ou um diretório dedicado e limpo.
+
+São eixos independentes, e um nome só não carrega os dois sem virar
+`cli-perfil-b-sem-skills-mas-com-a-outra-conta`. Pior: o nome do atalho não é
+evidência de nada. A conta mora no diretório de estado, e um `/login` feito lá
+dentro troca a conta sem trocar o atalho — o nome continua dizendo "pessoal"
+enquanto a sessão consome outro plano.
+
+A saída é separar as duas perguntas e dar cada uma a quem sabe respondê-la:
+
+- **a pasta de trabalho decide o que a sessão enxerga.** Um repositório que
+  depende das skills instaladas no perfil do usuário é declarado como zona sem
+  blindagem; todo o resto do computador abre blindado.
+- **o comando decide a conta.** `PlanoPessoal` e `PlanoTrabalho` escolhem o lado,
+  nunca a blindagem. Digitados na mesma pasta, os dois respeitam o que aquela
+  pasta determinou.
+- **o comando padrão da CLI segue uma tabela de rotas.** Sem argumento nenhum,
+  `claude` numa pasta declarada abre o lado daquela pasta; em qualquer outra,
+  abre o lado padrão.
+
+Com isso o conjunto de nomes para de crescer: dois lados, um comando de menu
+(`Planos`) e um de diagnóstico (`PlanoAtual`) cobrem qualquer número de
+diretórios de estado. E um erro fica impossível de esconder — `PlanoAtual`
+imprime, para a pasta corrente, qual diretório de estado seria usado e qual conta
+está gravada nele.
+
+Duas defesas valem a pena junto com isso:
+
+- **avisar quando o lado padrão for pessoal dentro de uma raiz de trabalho.** A
+  regra continua literal, mas um repositório da empresa consumindo o plano
+  pessoal para de acontecer em silêncio.
+- **um piso de segurança fora do shell.** Um editor, um `.cmd` ou um atalho que
+  chame a CLI direto não passa por função nenhuma e cai no diretório padrão.
+  Definir a variável de estado como variável de usuário permanente, apontando
+  para o perfil blindado, faz o piso ser o mais restrito em vez do mais aberto.
+
 Duas consequências importam para o diagnóstico deste projeto:
 
 - Cada perfil é um diretório de estado independente, e alguns passam de
@@ -129,6 +173,12 @@ pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1              # dry-run
 pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1 -Execute     # aplica
 ```
 
+O mesmo mapa descreve as rotas por pasta, as zonas sem blindagem e as abas do
+Windows Terminal. Aba que chama um comando aposentado não dá erro visível: ela
+abre, o shell reclama de comando desconhecido, e quem descobre é você no pior
+momento. Por isso as abas saem do mapa que gera os comandos, e não de uma edição
+paralela do `settings.json`.
+
 Garantias que o script mantém:
 
 - dry-run é o padrão; `-Execute` faz backup datado antes de escrever, e recusa o
@@ -136,6 +186,17 @@ Garantias que o script mantém:
 - só a região entre os marcadores é reescrita. Função escrita à mão continua
   onde está, e alias duplicado fora da região é apenas relatado — a decisão de
   remover é sua;
+- bloco antigo declarado em `legacyRegions` é removido junto, para não sobrar
+  definição duplicada do mesmo comando: duas definições não quebram o shell, mas
+  escondem qual delas está no ar;
+- no `settings.json` do Terminal, só perfis cujo GUID está em
+  `terminal.managedGuids` são tocados. GUID declarado ali e ausente de
+  `terminal.tabs` é uma aba aposentada, e some; qualquer outro perfil fica como
+  está. Se o arquivo tiver comentário — o Terminal aceita, `ConvertFrom-Json`
+  não — o script avisa e não mexe, em vez de apagar a anotação;
+- credencial não passa pelo script nem pelo código que ele gera:
+  `.credentials.json` nunca é aberto. O comando de status lê apenas o campo de
+  identificação de conta, para responder qual plano está em uso;
 - a saída é ASCII puro, porque perfil sem BOM é lido como ANSI pelo 5.1;
 - o alvo é sempre um perfil de host descoberto em runtime, nunca um caminho
   arbitrário;

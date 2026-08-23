@@ -15,8 +15,15 @@ continuam onde estao, e conflitos de nome sao apenas relatados.
 O mapa descreve maquina, entao mora em local\ e nunca e versionado. Use
 -Bootstrap para monta-lo por descoberta de convencao num computador novo.
 
-Dry-run e o padrao. Nenhuma credencial, token ou conteudo de perfil de CLI e
-lido: o script so mexe em arquivo de perfil do shell.
+O mapa tambem descreve rotas: quais pastas abrem em qual plano, e em quais
+delas a sessao enxerga skills e hooks do perfil do usuario. Nesse formato a
+pasta decide a blindagem e o comando decide o lado, entao os atalhos gerados
+sao por lado, nao por diretorio de estado.
+
+Dry-run e o padrao. O script so escreve em arquivo de perfil do shell.
+Credencial nao passa por aqui: nem o script nem o codigo que ele gera abrem
+.credentials.json. O comando de status gerado le apenas o campo de
+identificacao de conta de .claude.json, para responder qual plano esta em uso.
 
 .EXAMPLE
 pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1 -Bootstrap -SearchRoot C:\Repos
@@ -189,25 +196,54 @@ function New-ProfileMap {
     }
 }
 
+function Test-MapProperty {
+    <#
+    .SYNOPSIS
+    Diz se um objeto vindo de ConvertFrom-Json tem a propriedade.
+
+    .DESCRIPTION
+    Sob StrictMode, tocar em propriedade ausente e erro. Campo opcional de mapa
+    precisa desta pergunta antes da leitura.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()]$InputObject,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    if ($null -eq $InputObject) { return $false }
+    if ($InputObject -is [Collections.IDictionary]) { return $InputObject.Contains($Name) }
+    return ($InputObject.PSObject.Properties.Name -contains $Name)
+}
+
 function Test-ProfileMap {
     <#
     .SYNOPSIS
     Recusa mapa incompleto antes de gerar codigo a partir dele.
+
+    .DESCRIPTION
+    Dois formatos convivem. O antigo declara um atalho por diretorio de estado,
+    e la o campo "alias" e obrigatorio. O novo declara os diretorios com "side"
+    e "shield" e deixa a secao "routing" decidir os comandos: nesse caso o alias
+    e opcional, porque o diretorio nao vira atalho proprio.
     #>
     [CmdletBinding()]
     param([Parameter(Mandatory)]$Map)
 
-    if ($Map.PSObject.Properties.Name -notcontains 'profiles') {
+    if (-not (Test-MapProperty -InputObject $Map -Name 'profiles')) {
         throw 'Mapa sem a lista "profiles".'
     }
 
+    $validShields = @('aberto', 'blindado')
     $seen = [Collections.Generic.HashSet[string]]::new(
         [StringComparer]::OrdinalIgnoreCase
     )
+    $byCliSideShield = @{}
+
     foreach ($entry in @($Map.profiles)) {
-        foreach ($required in @('cli', 'alias', 'label', 'color', 'home')) {
+        foreach ($required in @('cli', 'label', 'color', 'home')) {
             if (
-                $entry.PSObject.Properties.Name -notcontains $required -or
+                -not (Test-MapProperty -InputObject $entry -Name $required) -or
                 [string]::IsNullOrWhiteSpace([string]$entry.$required)
             ) {
                 throw "Perfil sem o campo obrigatorio '$required': $($entry | ConvertTo-Json -Compress)"
@@ -216,14 +252,130 @@ function Test-ProfileMap {
         if (-not $cliCatalog.Contains([string]$entry.cli)) {
             throw "CLI desconhecida no mapa: $($entry.cli)"
         }
-        if ([string]$entry.alias -notmatch '^[A-Za-z][\w\-]*$') {
-            throw "Alias invalido para funcao do PowerShell: $($entry.alias)"
-        }
         if ([string]$entry.color -notin [Enum]::GetNames([ConsoleColor])) {
-            throw "Cor invalida para o alias $($entry.alias): $($entry.color)"
+            throw "Cor invalida no perfil $($entry.home): $($entry.color)"
         }
-        if (-not $seen.Add([string]$entry.alias)) {
-            throw "Alias repetido no mapa: $($entry.alias)"
+
+        $hasAlias = (Test-MapProperty -InputObject $entry -Name 'alias') -and
+            -not [string]::IsNullOrWhiteSpace([string]$entry.alias)
+        $hasSide = (Test-MapProperty -InputObject $entry -Name 'side') -and
+            -not [string]::IsNullOrWhiteSpace([string]$entry.side)
+        $hasShield = (Test-MapProperty -InputObject $entry -Name 'shield') -and
+            -not [string]::IsNullOrWhiteSpace([string]$entry.shield)
+
+        if ($hasAlias) {
+            if ([string]$entry.alias -notmatch '^[A-Za-z][\w\-]*$') {
+                throw "Alias invalido para funcao do PowerShell: $($entry.alias)"
+            }
+            if (-not $seen.Add([string]$entry.alias)) {
+                throw "Alias repetido no mapa: $($entry.alias)"
+            }
+        }
+
+        if ($hasSide -ne $hasShield) {
+            throw "Perfil com 'side' sem 'shield' ou vice-versa: $($entry.home)"
+        }
+        if ($hasShield -and ([string]$entry.shield -notin $validShields)) {
+            throw "Blindagem invalida em $($entry.home): $($entry.shield). Use 'aberto' ou 'blindado'."
+        }
+        if ($hasSide) {
+            $chave = '{0}|{1}|{2}' -f $entry.cli, $entry.side, $entry.shield
+            if ($byCliSideShield.ContainsKey($chave)) {
+                throw "Dois perfis para o mesmo lado e blindagem: $chave"
+            }
+            $byCliSideShield[$chave] = [string]$entry.home
+        }
+        if (-not $hasAlias -and -not $hasSide) {
+            # Sem alias e sem lado o perfil nao gera nada. Continua valendo para
+            # a descoberta de cobertura do antimalware, entao e aviso, nao erro.
+            Write-Verbose "Perfil so para inventario, sem atalho e sem rota: $($entry.home)"
+        }
+    }
+
+    if (-not (Test-MapProperty -InputObject $Map -Name 'routing')) {
+        return
+    }
+
+    foreach ($cliName in @($Map.routing.PSObject.Properties.Name)) {
+        if (-not $cliCatalog.Contains($cliName)) {
+            throw "Rota declarada para CLI desconhecida: $cliName"
+        }
+        $routing = $Map.routing.$cliName
+
+        foreach ($required in @('defaultSide', 'commands')) {
+            if (-not (Test-MapProperty -InputObject $routing -Name $required)) {
+                throw "routing.$cliName sem o campo obrigatorio '$required'."
+            }
+        }
+
+        $sides = @($routing.commands.PSObject.Properties.Name)
+        if ($sides.Count -eq 0) {
+            throw "routing.$cliName sem nenhum lado em 'commands'."
+        }
+        if ([string]$routing.defaultSide -notin $sides) {
+            throw "routing.$cliName.defaultSide '$($routing.defaultSide)' nao esta em 'commands'."
+        }
+
+        foreach ($side in $sides) {
+            foreach ($shield in $validShields) {
+                $chave = '{0}|{1}|{2}' -f $cliName, $side, $shield
+                if (-not $byCliSideShield.ContainsKey($chave)) {
+                    throw (
+                        "Falta o perfil '$side' / '$shield' para $cliName. " +
+                        'Cada lado precisa dos dois diretorios de estado, ' +
+                        'senao uma pasta fica sem plano.'
+                    )
+                }
+            }
+            foreach ($command in @($routing.commands.$side)) {
+                if ([string]$command -notmatch '^[A-Za-z][\w\-]*$') {
+                    throw "Comando invalido para funcao do PowerShell: $command"
+                }
+                if (-not $seen.Add([string]$command)) {
+                    throw "Comando repetido no mapa: $command"
+                }
+            }
+        }
+
+        foreach ($optional in @('statusCommand', 'askCommand')) {
+            if (-not (Test-MapProperty -InputObject $routing -Name $optional)) { continue }
+            $nome = [string]$routing.$optional
+            if ([string]::IsNullOrWhiteSpace($nome)) { continue }
+            if ($nome -notmatch '^[A-Za-z][\w\-]*$') {
+                throw "Comando invalido para funcao do PowerShell: $nome"
+            }
+            if (-not $seen.Add($nome)) {
+                throw "Comando repetido no mapa: $nome"
+            }
+        }
+        foreach ($optional in @('statusAliases', 'askAliases')) {
+            if (-not (Test-MapProperty -InputObject $routing -Name $optional)) { continue }
+            foreach ($nome in @($routing.$optional)) {
+                if ([string]$nome -notmatch '^[A-Za-z][\w\-]*$') {
+                    throw "Alias invalido para funcao do PowerShell: $nome"
+                }
+                if (-not $seen.Add([string]$nome)) {
+                    throw "Comando repetido no mapa: $nome"
+                }
+            }
+        }
+
+        # Rota para pasta inexistente nao e erro - repositorio pode nao estar
+        # clonado nesta maquina - mas o silencio esconde erro de digitacao.
+        if (Test-MapProperty -InputObject $routing -Name 'routes') {
+            foreach ($route in @($routing.routes)) {
+                foreach ($required in @('path', 'side')) {
+                    if (-not (Test-MapProperty -InputObject $route -Name $required)) {
+                        throw "Rota de $cliName sem o campo '$required'."
+                    }
+                }
+                if ([string]$route.side -notin $sides) {
+                    throw "Rota $($route.path) aponta para lado desconhecido: $($route.side)"
+                }
+                if (-not (Test-Path -LiteralPath ([string]$route.path))) {
+                    Write-Warning "Rota declarada para pasta que nao existe aqui: $($route.path)"
+                }
+            }
         }
     }
 }
@@ -306,6 +458,401 @@ function ConvertTo-GeneratedPath {
     return "'" + $full.Replace("'", "''") + "'"
 }
 
+function ConvertTo-GeneratedList {
+    <#
+    .SYNOPSIS
+    Escreve uma lista de caminhos como literal de array do PowerShell.
+    #>
+    [CmdletBinding()]
+    param([string[]]$Item = @())
+
+    if (@($Item).Count -eq 0) { return '@()' }
+    $partes = foreach ($valor in $Item) { ConvertTo-GeneratedPath -Path $valor }
+    return '@(' + ($partes -join ', ') + ')'
+}
+
+# Nucleo fixo das rotas. Nao depende do mapa: o que muda de maquina para maquina
+# entra em $script:PlanoRota, montado logo acima dele por New-RoutingLines.
+$routingCore = @'
+
+# ---- nucleo das rotas: identico em qualquer maquina ----
+
+function Get-PlanoPastaAtual {
+    # Location fora do provedor de arquivos - HKLM:\, por exemplo - nao tem
+    # caminho para casar com rota. O perfil do usuario e o fallback honesto.
+    $atual = Get-Location
+    if ($atual.Provider.Name -eq 'FileSystem') { return $atual.ProviderPath }
+    return $env:USERPROFILE
+}
+
+function Test-PlanoDentroDe {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Root
+    )
+    # Caminho exato ou subpasta real. Nao e curinga: um vizinho chamado
+    # <raiz>-antigo nao pode entrar na regra da raiz.
+    $p = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    $r = [IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if ($p.Equals($r, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    return $p.StartsWith($r + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-PlanoBlindagem {
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Path
+    )
+    # Blindagem e propriedade da PASTA, nunca do comando.
+    foreach ($zona in $script:PlanoRota[$Cli].OpenZones) {
+        if (Test-PlanoDentroDe -Path $Path -Root $zona) { return 'aberto' }
+    }
+    return 'blindado'
+}
+
+function Get-PlanoLado {
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Path
+    )
+    $lado = $script:PlanoRota[$Cli].DefaultSide
+    $maisEspecifica = -1
+    foreach ($rota in $script:PlanoRota[$Cli].Routes) {
+        if (-not (Test-PlanoDentroDe -Path $Path -Root $rota.Path)) { continue }
+        # Rota aninhada vence a rota mais curta que a contem.
+        if ($rota.Path.Length -gt $maisEspecifica) {
+            $maisEspecifica = $rota.Path.Length
+            $lado = $rota.Side
+        }
+    }
+    return $lado
+}
+
+function Resolve-PlanoEstado {
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Side
+    )
+    $blindagem = Get-PlanoBlindagem -Cli $Cli -Path $Path
+    $chave = $Side + '|' + $blindagem
+    $rota = $script:PlanoRota[$Cli]
+    if (-not $rota.Dir.ContainsKey($chave)) {
+        throw "Plano sem diretorio de estado declarado: $chave"
+    }
+    return [pscustomobject]@{
+        Cli = $Cli
+        Side = $Side
+        Shield = $blindagem
+        Home = $rota.Dir[$chave]
+        Label = $rota.Label[$chave]
+        Color = $rota.Color[$chave]
+    }
+}
+
+function Get-PlanoConta {
+    <#
+    .SYNOPSIS
+    Le so a identificacao de conta do diretorio de estado.
+
+    .DESCRIPTION
+    Le exclusivamente oauthAccount de .claude.json. O arquivo de credenciais
+    nunca e aberto: token nao precisa passar por aqui para responder "qual
+    plano estou gastando".
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $arquivo = Join-Path $Path '.claude.json'
+    if (-not (Test-Path -LiteralPath $arquivo -PathType Leaf)) {
+        # O diretorio padrao guarda a identificacao um nivel acima.
+        $herdado = Join-Path $env:USERPROFILE '.claude.json'
+        if (
+            (Test-PlanoDentroDe -Path $Path -Root (Join-Path $env:USERPROFILE '.claude')) -and
+            (Test-Path -LiteralPath $herdado -PathType Leaf)
+        ) {
+            $arquivo = $herdado
+        } else {
+            return 'sem login'
+        }
+    }
+    try {
+        $dados = Get-Content -LiteralPath $arquivo -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        return 'ilegivel'
+    }
+    if ($dados.PSObject.Properties.Name -notcontains 'oauthAccount') { return 'sem login' }
+    $conta = $dados.oauthAccount
+    $email = if ($conta.PSObject.Properties.Name -contains 'emailAddress') { [string]$conta.emailAddress } else { '' }
+    $org = if ($conta.PSObject.Properties.Name -contains 'organizationName') { [string]$conta.organizationName } else { '' }
+    if ([string]::IsNullOrWhiteSpace($email)) { return 'sem login' }
+    if ([string]::IsNullOrWhiteSpace($org)) { return $email }
+    return "$email ($org)"
+}
+
+function Get-PlanoSkill {
+    param([Parameter(Mandatory)][string]$Path)
+    $pasta = Join-Path $Path 'skills'
+    if (-not (Test-Path -LiteralPath $pasta -PathType Container)) { return 0 }
+    return @(Get-ChildItem -LiteralPath $pasta -Directory -ErrorAction SilentlyContinue).Count
+}
+
+function Write-PlanoCabecalho {
+    param(
+        [Parameter(Mandatory)]$Plano,
+        [Parameter(Mandatory)][string]$Pasta
+    )
+    Write-Host ''
+    Write-Host ('  Plano ' + $Plano.Label) -ForegroundColor $Plano.Color
+    Write-Host ('    estado : ' + $Plano.Home) -ForegroundColor DarkGray
+    Write-Host ('    pasta  : ' + $Pasta) -ForegroundColor DarkGray
+    if ($Plano.Shield -eq 'aberto') {
+        Write-Host '    atencao: SEM BLINDAGEM - enxerga skills, hooks e agents do perfil do usuario' -ForegroundColor DarkYellow
+    }
+    foreach ($raiz in $script:PlanoRota[$Plano.Cli].WarnPersonalUnder) {
+        if ($Plano.Side -ne $script:PlanoRota[$Plano.Cli].DefaultSide) { break }
+        if (Test-PlanoDentroDe -Path $Pasta -Root $raiz) {
+            Write-Host ('    atencao: pasta sob ' + $raiz + ' abrindo no plano ' + $Plano.Label) -ForegroundColor Red
+            break
+        }
+    }
+    if (-not (Test-Path -LiteralPath $Plano.Home -PathType Container)) {
+        Write-Host '    atencao: diretorio de estado ainda nao existe; a CLI vai cria-lo' -ForegroundColor DarkYellow
+    }
+    Write-Host ''
+}
+
+function Invoke-PlanoCli {
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Side,
+        [Parameter(ValueFromRemainingArguments)][object[]]$Rest
+    )
+
+    $rota = $script:PlanoRota[$Cli]
+    $pasta = Get-PlanoPastaAtual
+    $plano = Resolve-PlanoEstado -Cli $Cli -Path $pasta -Side $Side
+
+    # A flag obrigatoria e injetada aqui, uma vez so. Digitada a mao - inclusive
+    # errada, no singular - a CLI recusava com "unknown option" e a sessao morria
+    # antes de comecar. Qualquer variante vinda dos argumentos e descartada.
+    $limpos = @()
+    $corrigiu = $false
+    foreach ($argumento in @($Rest)) {
+        $descartar = $false
+        foreach ($flag in $rota.Flags) {
+            if (($argumento -is [string]) -and ($argumento -match ('^' + [regex]::Escape($flag) + '?$'))) {
+                if ($argumento -cne $flag) { $corrigiu = $true }
+                $descartar = $true
+                break
+            }
+        }
+        if (-not $descartar) { $limpos += $argumento }
+    }
+
+    Write-PlanoCabecalho -Plano $plano -Pasta $pasta
+    if ($corrigiu) {
+        Write-Host '  (flag corrigida para a forma aceita pela CLI)' -ForegroundColor DarkGray
+    }
+
+    $argumentos = @($rota.Flags) + @($limpos)
+    $had = Test-Path ('Env:\' + $rota.Variable)
+    $anterior = [Environment]::GetEnvironmentVariable($rota.Variable)
+    try {
+        [Environment]::SetEnvironmentVariable($rota.Variable, $plano.Home)
+        & (Resolve-CliExecutable -Command $rota.Command) @argumentos
+    } finally {
+        # Restaurar evita que a aba continue apontando para o plano trocado
+        # depois que a CLI sai. [NullString]::Value remove de verdade nos dois
+        # hosts; $null viraria string vazia no PowerShell 7.
+        if ($had) {
+            [Environment]::SetEnvironmentVariable($rota.Variable, $anterior)
+        } else {
+            [Environment]::SetEnvironmentVariable($rota.Variable, [NullString]::Value)
+        }
+    }
+}
+
+function Show-PlanoStatus {
+    param([Parameter(Mandatory)][string]$Cli)
+
+    $rota = $script:PlanoRota[$Cli]
+    $pasta = Get-PlanoPastaAtual
+    $automatico = Get-PlanoLado -Cli $Cli -Path $pasta
+    $blindagem = Get-PlanoBlindagem -Cli $Cli -Path $pasta
+
+    Write-Host ''
+    Write-Host ('  Pasta      : ' + $pasta)
+    Write-Host ('  Blindagem  : ' + $blindagem + '   (decidida pela pasta, nunca pelo comando)')
+    $ativo = [Environment]::GetEnvironmentVariable($rota.Variable)
+    if ([string]::IsNullOrWhiteSpace($ativo)) {
+        Write-Host ('  ' + $rota.Variable + ': nao definida - a CLI usaria o diretorio padrao')
+    } else {
+        Write-Host ('  ' + $rota.Variable + ': ' + $ativo)
+    }
+    Write-Host ''
+    foreach ($lado in $rota.Sides) {
+        $plano = Resolve-PlanoEstado -Cli $Cli -Path $pasta -Side $lado
+        $marca = '   '
+        if ($lado -eq $automatico) { $marca = ' > ' }
+        Write-Host ($marca + $plano.Label) -ForegroundColor $plano.Color
+        Write-Host ('      estado : ' + $plano.Home) -ForegroundColor DarkGray
+        Write-Host ('      conta  : ' + (Get-PlanoConta -Path $plano.Home)) -ForegroundColor DarkGray
+        Write-Host ('      skills : ' + (Get-PlanoSkill -Path $plano.Home)) -ForegroundColor DarkGray
+    }
+    Write-Host ''
+    Write-Host ('  " > " e o que ' + $rota.Command + ' abre nesta pasta.') -ForegroundColor DarkGray
+    Write-Host ''
+}
+
+function Select-PlanoLado {
+    param([Parameter(Mandatory)][string]$Cli)
+
+    $rota = $script:PlanoRota[$Cli]
+    $pasta = Get-PlanoPastaAtual
+    $automatico = Get-PlanoLado -Cli $Cli -Path $pasta
+
+    Write-Host ''
+    Write-Host '  Qual plano?' -ForegroundColor White
+    $indice = 1
+    foreach ($lado in $rota.Sides) {
+        $plano = Resolve-PlanoEstado -Cli $Cli -Path $pasta -Side $lado
+        $sufixo = ''
+        if ($lado -eq $automatico) { $sufixo = '   (o padrao nesta pasta)' }
+        Write-Host ('    [' + $indice + '] ' + $plano.Label + $sufixo) -ForegroundColor $plano.Color
+        Write-Host ('        ' + $plano.Home) -ForegroundColor DarkGray
+        $indice++
+    }
+    $escolha = (Read-Host ('  Escolha (1-' + $rota.Sides.Count + ', Enter para o padrao)')).Trim()
+    if ([string]::IsNullOrWhiteSpace($escolha)) { return $automatico }
+    $numero = 0
+    if (-not [int]::TryParse($escolha, [ref]$numero)) { return '' }
+    if ($numero -lt 1 -or $numero -gt $rota.Sides.Count) { return '' }
+    return $rota.Sides[$numero - 1]
+}
+'@
+
+function New-RoutingLines {
+    <#
+    .SYNOPSIS
+    Gera os dados de rota de uma CLI e os comandos que o usuario digita.
+
+    .DESCRIPTION
+    A pasta decide a blindagem, o comando decide o lado. Por isso nao existe
+    comando por diretorio de estado: existem comandos por lado, e o diretorio
+    sai do cruzamento com a pasta corrente.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)]$Routing,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Profile
+    )
+
+    $catalog = $cliCatalog[$Cli]
+    $sides = @($Routing.commands.PSObject.Properties.Name)
+    $lines = [Collections.Generic.List[string]]::new()
+
+    $lines.Add('')
+    $lines.Add("# ===== $Cli : planos por pasta =====")
+    $lines.Add("# A pasta decide a blindagem. O comando decide o lado.")
+    $lines.Add("`$script:PlanoRota['$Cli'] = @{")
+    $lines.Add("    Command = '$($catalog.Command)'")
+    $lines.Add("    Variable = '$($catalog.Variable)'")
+    $lines.Add("    DefaultSide = '$([string]$Routing.defaultSide)'")
+    $lines.Add("    Sides = @(" + (($sides | ForEach-Object { "'$_'" }) -join ', ') + ")")
+
+    $flags = if (Test-MapProperty -InputObject $Routing -Name 'flags') { @($Routing.flags) } else { @() }
+    $lines.Add("    Flags = @(" + (($flags | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ")")
+
+    $zones = if (Test-MapProperty -InputObject $Routing -Name 'openZones') { @($Routing.openZones) } else { @() }
+    $lines.Add("    OpenZones = " + (ConvertTo-GeneratedList -Item @($zones | ForEach-Object { [string]$_ })))
+
+    $warn = if (Test-MapProperty -InputObject $Routing -Name 'warnPersonalUnder') { @($Routing.warnPersonalUnder) } else { @() }
+    $lines.Add("    WarnPersonalUnder = " + (ConvertTo-GeneratedList -Item @($warn | ForEach-Object { [string]$_ })))
+
+    $routes = if (Test-MapProperty -InputObject $Routing -Name 'routes') { @($Routing.routes) } else { @() }
+    if (@($routes).Count -eq 0) {
+        $lines.Add('    Routes = @()')
+    } else {
+        $lines.Add('    Routes = @(')
+        foreach ($route in $routes) {
+            $lines.Add(
+                '        @{ Path = ' + (ConvertTo-GeneratedPath -Path ([string]$route.path)) +
+                "; Side = '$([string]$route.side)' }"
+            )
+        }
+        $lines.Add('    )')
+    }
+
+    foreach ($campo in @('Dir', 'Label', 'Color')) {
+        $lines.Add("    $campo = @{")
+        foreach ($entry in $Profile) {
+            if (-not (Test-MapProperty -InputObject $entry -Name 'side')) { continue }
+            $chave = "$($entry.side)|$($entry.shield)"
+            $valor = switch ($campo) {
+                'Dir' { ConvertTo-GeneratedPath -Path ([string]$entry.home) }
+                'Label' { "'" + ([string]$entry.label).Replace("'", "''") + "'" }
+                default { "'$([string]$entry.color)'" }
+            }
+            $lines.Add("        '$chave' = $valor")
+        }
+        $lines.Add('    }')
+    }
+    $lines.Add('}')
+
+    $lines.Add('')
+    $lines.Add("# ---- comandos de $Cli ----")
+    $lines.Add("function $($catalog.Command) {")
+    $lines.Add('    param([Parameter(ValueFromRemainingArguments)][object[]]$Rest)')
+    $lines.Add("    `$lado = Get-PlanoLado -Cli '$Cli' -Path (Get-PlanoPastaAtual)")
+    $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side `$lado @Rest")
+    $lines.Add('}')
+
+    foreach ($side in $sides) {
+        $nomes = @($Routing.commands.$side)
+        $canonico = [string]$nomes[0]
+        $lines.Add("function $canonico {")
+        $lines.Add('    param([Parameter(ValueFromRemainingArguments)][object[]]$Rest)')
+        $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side '$side' @Rest")
+        $lines.Add('}')
+        foreach ($apelido in @($nomes | Select-Object -Skip 1)) {
+            $lines.Add("Set-Alias -Name $apelido -Value $canonico -Scope Global -Force")
+        }
+    }
+
+    if (Test-MapProperty -InputObject $Routing -Name 'statusCommand') {
+        $nome = [string]$Routing.statusCommand
+        $lines.Add("function $nome {")
+        $lines.Add("    Show-PlanoStatus -Cli '$Cli'")
+        $lines.Add('}')
+        if (Test-MapProperty -InputObject $Routing -Name 'statusAliases') {
+            foreach ($apelido in @($Routing.statusAliases)) {
+                $lines.Add("Set-Alias -Name $apelido -Value $nome -Scope Global -Force")
+            }
+        }
+    }
+
+    if (Test-MapProperty -InputObject $Routing -Name 'askCommand') {
+        $nome = [string]$Routing.askCommand
+        $lines.Add("function $nome {")
+        $lines.Add('    param([Parameter(ValueFromRemainingArguments)][object[]]$Rest)')
+        $lines.Add("    `$lado = Select-PlanoLado -Cli '$Cli'")
+        $lines.Add('    if ([string]::IsNullOrWhiteSpace($lado)) {')
+        $lines.Add("        Write-Host '  Opcao invalida. Abortado.' -ForegroundColor Red")
+        $lines.Add('        return')
+        $lines.Add('    }')
+        $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side `$lado @Rest")
+        $lines.Add('}')
+        if (Test-MapProperty -InputObject $Routing -Name 'askAliases') {
+            foreach ($apelido in @($Routing.askAliases)) {
+                $lines.Add("Set-Alias -Name $apelido -Value $nome -Scope Global -Force")
+            }
+        }
+    }
+
+    return $lines
+}
+
 function New-ManagedBlock {
     <#
     .SYNOPSIS
@@ -330,6 +877,20 @@ function New-ManagedBlock {
     $lines.Add('    if (-not $found) { throw "$Command nao encontrado no PATH" }')
     $lines.Add('    return $found.Source')
     $lines.Add('}')
+    # Um atalho por diretorio de estado so existe para CLI sem rota declarada.
+    # Sem nenhuma delas, esta funcao seria codigo morto no perfil do usuario.
+    $legacyEntries = @(
+        $Map.profiles | Where-Object {
+            $cliDoPerfil = [string]$_.cli
+            $temAlias = (Test-MapProperty -InputObject $_ -Name 'alias') -and
+                -not [string]::IsNullOrWhiteSpace([string]$_.alias)
+            $temRota = (Test-MapProperty -InputObject $Map -Name 'routing') -and
+                (Test-MapProperty -InputObject $Map.routing -Name $cliDoPerfil)
+            $temAlias -and -not $temRota
+        }
+    )
+
+    if (@($legacyEntries).Count -gt 0) {
     $lines.Add('')
     $lines.Add('function Invoke-CliProfile {')
     $lines.Add('    param(')
@@ -361,9 +922,41 @@ function New-ManagedBlock {
     $lines.Add('        }')
     $lines.Add('    }')
     $lines.Add('}')
+    }
+
+    $hasRouting = Test-MapProperty -InputObject $Map -Name 'routing'
+    if ($hasRouting) {
+        $lines.Add('')
+        $lines.Add('$script:PlanoRota = @{}')
+        foreach ($coreLine in ($routingCore -split "\r?\n")) {
+            $lines.Add($coreLine.TrimEnd())
+        }
+    }
 
     foreach ($cli in $cliCatalog.Keys) {
         $entries = @($Map.profiles | Where-Object { [string]$_.cli -eq $cli })
+        if ($entries.Count -eq 0) {
+            continue
+        }
+
+        if ($hasRouting -and (Test-MapProperty -InputObject $Map.routing -Name $cli)) {
+            foreach ($routingLine in (
+                New-RoutingLines -Cli $cli -Routing $Map.routing.$cli -Profile $entries
+            )) {
+                $lines.Add($routingLine)
+            }
+            continue
+        }
+
+        # Sem rota, vale o formato antigo: um atalho por diretorio de estado.
+        # Perfil sem alias existe so para o inventario de cobertura e nao gera
+        # funcao nenhuma.
+        $entries = @(
+            $entries | Where-Object {
+                (Test-MapProperty -InputObject $_ -Name 'alias') -and
+                -not [string]::IsNullOrWhiteSpace([string]$_.alias)
+            }
+        )
         if ($entries.Count -eq 0) {
             continue
         }
@@ -439,6 +1032,106 @@ function Get-AliasConflict {
     }
 }
 
+function Get-GeneratedCommandName {
+    <#
+    .SYNOPSIS
+    Lista os nomes de funcao que o bloco vai definir.
+
+    .DESCRIPTION
+    Serve para dois fins: apontar conflito com codigo escrito a mao fora da
+    regiao, e dizer ao usuario quantos comandos existem depois da sincronizacao.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)]$Map)
+
+    $nomes = [Collections.Generic.List[string]]::new()
+    $comRota = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    if (Test-MapProperty -InputObject $Map -Name 'routing') {
+        foreach ($cli in @($Map.routing.PSObject.Properties.Name)) {
+            $null = $comRota.Add($cli)
+            $routing = $Map.routing.$cli
+            $nomes.Add($cliCatalog[$cli].Command)
+            foreach ($side in @($routing.commands.PSObject.Properties.Name)) {
+                foreach ($nome in @($routing.commands.$side)) { $nomes.Add([string]$nome) }
+            }
+            foreach ($campo in @('statusCommand', 'askCommand')) {
+                if (-not (Test-MapProperty -InputObject $routing -Name $campo)) { continue }
+                if ([string]::IsNullOrWhiteSpace([string]$routing.$campo)) { continue }
+                $nomes.Add([string]$routing.$campo)
+            }
+            foreach ($campo in @('statusAliases', 'askAliases')) {
+                if (-not (Test-MapProperty -InputObject $routing -Name $campo)) { continue }
+                foreach ($nome in @($routing.$campo)) { $nomes.Add([string]$nome) }
+            }
+        }
+    }
+
+    foreach ($entry in @($Map.profiles)) {
+        if ($comRota.Contains([string]$entry.cli)) { continue }
+        if (-not (Test-MapProperty -InputObject $entry -Name 'alias')) { continue }
+        if ([string]::IsNullOrWhiteSpace([string]$entry.alias)) { continue }
+        $nomes.Add([string]$entry.alias)
+    }
+
+    return @($nomes)
+}
+
+function Remove-LegacyRegion {
+    <#
+    .SYNOPSIS
+    Tira do perfil um bloco antigo delimitado por comentarios, sem resquicio.
+
+    .DESCRIPTION
+    Codigo escrito a mao que a regiao gerenciada substitui nao pode ficar para
+    tras: duas definicoes do mesmo comando nao quebram o shell, mas escondem
+    qual esta no ar. Os delimitadores vem do mapa, nunca do script, porque sao
+    detalhe da maquina.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Content,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Region
+    )
+
+    $texto = $Content
+    $removidos = [Collections.Generic.List[string]]::new()
+
+    foreach ($regiao in $Region) {
+        foreach ($campo in @('start', 'end')) {
+            if (-not (Test-MapProperty -InputObject $regiao -Name $campo)) {
+                throw "Regiao legada sem o campo '$campo' no mapa."
+            }
+        }
+        $inicio = [string]$regiao.start
+        $fim = [string]$regiao.end
+
+        while ($true) {
+            $i = $texto.IndexOf($inicio, [StringComparison]::Ordinal)
+            if ($i -lt 0) { break }
+            $j = $texto.IndexOf($fim, $i, [StringComparison]::Ordinal)
+            if ($j -lt 0) {
+                throw (
+                    "Bloco legado aberto e nao fechado: '$inicio' sem '$fim'. " +
+                    'Corrija a mao antes de sincronizar.'
+                )
+            }
+            $corte = $j + $fim.Length
+            # Leva junto a quebra de linha que sobraria sozinha no lugar.
+            while ($corte -lt $texto.Length -and ($texto[$corte] -eq "`r" -or $texto[$corte] -eq "`n")) {
+                $corte++
+            }
+            $texto = $texto.Substring(0, $i) + $texto.Substring($corte)
+            $removidos.Add($inicio)
+        }
+    }
+
+    return [pscustomobject]@{
+        Content = $texto
+        Removed = @($removidos)
+    }
+}
+
 function Set-ManagedRegion {
     <#
     .SYNOPSIS
@@ -450,14 +1143,18 @@ function Set-ManagedRegion {
         # O bloco tem linhas em branco de proposito; sem AllowEmptyString o
         # binding de parametro obrigatorio recusa cada uma delas.
         [Parameter(Mandatory)][AllowEmptyString()][string[]]$BlockLine,
+        [AllowEmptyCollection()][object[]]$LegacyRegion = @(),
         [switch]$Apply
     )
 
-    $existing = if (Test-Path -LiteralPath $Path -PathType Leaf) {
+    $original = if (Test-Path -LiteralPath $Path -PathType Leaf) {
         [IO.File]::ReadAllText($Path)
     } else {
         ''
     }
+
+    $limpeza = Remove-LegacyRegion -Content $original -Region $LegacyRegion
+    $existing = $limpeza.Content
 
     $newline = if ($existing -match "\r\n") { "`r`n" } else { "`n" }
     $block = ($BlockLine -join $newline)
@@ -483,11 +1180,16 @@ function Set-ManagedRegion {
         $prefix + $newline + $block + $newline
     }
 
+    if (@($limpeza.Removed).Count -gt 0) {
+        $action = "$action, $(@($limpeza.Removed).Count) bloco(s) legado(s) removido(s)"
+    }
+
     $result = [pscustomobject]@{
         Path = $Path
         Action = $action
-        Changed = ($updated -ne $existing)
+        Changed = ($updated -ne $original)
         Backup = ''
+        LegacyRemoved = @($limpeza.Removed)
     }
 
     if (-not $result.Changed) {
@@ -506,7 +1208,7 @@ function Set-ManagedRegion {
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         $null = New-Item -ItemType Directory -Path $directory
     }
-    if ($existing -ne '') {
+    if ($original -ne '') {
         $result.Backup = "$Path.bak-$(Get-Date -Format 'yyyy-MM-dd_HHmm')"
         Copy-Item -LiteralPath $Path -Destination $result.Backup
     }
@@ -521,6 +1223,148 @@ function Set-ManagedRegion {
     }
 
     return $result
+}
+
+function Sync-TerminalTab {
+    <#
+    .SYNOPSIS
+    Alinha as abas do Windows Terminal com os comandos do mapa.
+
+    .DESCRIPTION
+    Aba que chama um comando que deixou de existir nao da erro visivel: ela abre,
+    o shell reclama de comando desconhecido e o usuario descobre no pior momento.
+    Por isso as abas saem do mesmo mapa que gera os comandos.
+
+    "managedGuids" e a lista do que este script pode mexer, incluindo aba
+    aposentada. Um GUID declarado ali e ausente de "tabs" e removido; nenhum
+    perfil fora dessa lista e tocado.
+    #>
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]$Map,
+        [switch]$Apply
+    )
+
+    if (-not (Test-MapProperty -InputObject $Map -Name 'terminal')) {
+        return $null
+    }
+
+    $terminal = $Map.terminal
+    $settingsPath = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) `
+        'Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json'
+    if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) {
+        Write-Warning "Windows Terminal nao encontrado; abas nao sincronizadas: $settingsPath"
+        return $null
+    }
+
+    $originalText = [IO.File]::ReadAllText($settingsPath)
+    try {
+        $settings = $originalText | ConvertFrom-Json
+    } catch {
+        # settings.json aceita comentario; ConvertFrom-Json nao. Reescrever as
+        # cegas apagaria anotacao do usuario.
+        Write-Warning "settings.json do Windows Terminal nao e JSON puro (comentario?): abas nao sincronizadas."
+        return $null
+    }
+
+    $managed = @()
+    if (Test-MapProperty -InputObject $terminal -Name 'managedGuids') {
+        $managed = @($terminal.managedGuids | ForEach-Object { [string]$_ })
+    }
+    $tabs = @()
+    if (Test-MapProperty -InputObject $terminal -Name 'tabs') {
+        $tabs = @($terminal.tabs)
+    }
+    $desejados = @($tabs | ForEach-Object { [string]$_.guid })
+
+    foreach ($guid in $desejados) {
+        if ($guid -notin $managed) {
+            throw "Aba $guid nao esta em terminal.managedGuids. Declare o GUID antes de usa-lo."
+        }
+    }
+
+    $lista = [Collections.Generic.List[object]]::new()
+    $removidas = [Collections.Generic.List[string]]::new()
+    foreach ($perfil in @($settings.profiles.list)) {
+        $guid = if (Test-MapProperty -InputObject $perfil -Name 'guid') { [string]$perfil.guid } else { '' }
+        if (($guid -in $managed) -and ($guid -notin $desejados)) {
+            $nome = if (Test-MapProperty -InputObject $perfil -Name 'name') { [string]$perfil.name } else { $guid }
+            $removidas.Add($nome)
+            continue
+        }
+        $lista.Add($perfil)
+    }
+
+    $criadas = [Collections.Generic.List[string]]::new()
+    $atualizadas = [Collections.Generic.List[string]]::new()
+    foreach ($tab in $tabs) {
+        $guid = [string]$tab.guid
+        $comando = 'pwsh.exe -NoExit -Command ' + [string]$tab.command
+        $existente = $lista | Where-Object {
+            (Test-MapProperty -InputObject $_ -Name 'guid') -and ([string]$_.guid -eq $guid)
+        } | Select-Object -First 1
+
+        if ($null -eq $existente) {
+            $novo = [pscustomobject]@{
+                guid = $guid
+                name = [string]$tab.name
+                commandline = $comando
+                startingDirectory = [string]$tab.startingDirectory
+                tabColor = [string]$tab.tabColor
+                hidden = $false
+            }
+            $lista.Add($novo)
+            $criadas.Add([string]$tab.name)
+            continue
+        }
+
+        $mudou = $false
+        foreach ($par in @(
+            @{ Nome = 'name'; Valor = [string]$tab.name }
+            @{ Nome = 'commandline'; Valor = $comando }
+            @{ Nome = 'startingDirectory'; Valor = [string]$tab.startingDirectory }
+            @{ Nome = 'tabColor'; Valor = [string]$tab.tabColor }
+            @{ Nome = 'hidden'; Valor = $false }
+        )) {
+            $atual = if (Test-MapProperty -InputObject $existente -Name $par.Nome) { $existente.($par.Nome) } else { $null }
+            if ($atual -ne $par.Valor) {
+                $existente | Add-Member -NotePropertyName $par.Nome -NotePropertyValue $par.Valor -Force
+                $mudou = $true
+            }
+        }
+        if ($mudou) { $atualizadas.Add([string]$tab.name) }
+    }
+
+    $settings.profiles.list = @($lista)
+    $novoTexto = ($settings | ConvertTo-Json -Depth 100)
+
+    $resultado = [pscustomobject]@{
+        Path = $settingsPath
+        Criadas = @($criadas)
+        Atualizadas = @($atualizadas)
+        Removidas = @($removidas)
+        Changed = ($novoTexto -ne $originalText)
+        Backup = ''
+    }
+
+    if (-not $resultado.Changed -or -not $Apply) { return $resultado }
+    if (-not $PSCmdlet.ShouldProcess($settingsPath, 'sincronizar abas do Windows Terminal')) {
+        return $resultado
+    }
+
+    $resultado.Backup = "$settingsPath.bak-$(Get-Date -Format 'yyyy-MM-dd_HHmm')"
+    Copy-Item -LiteralPath $settingsPath -Destination $resultado.Backup
+    # UTF8 sem BOM: e o que o Windows Terminal grava, e BOM aqui vira aviso dele.
+    [IO.File]::WriteAllText($settingsPath, $novoTexto, [Text.UTF8Encoding]::new($false))
+
+    try {
+        $null = [IO.File]::ReadAllText($settingsPath) | ConvertFrom-Json
+    } catch {
+        Copy-Item -LiteralPath $resultado.Backup -Destination $settingsPath -Force
+        throw "settings.json gerado nao e JSON valido; restaurado de $($resultado.Backup)."
+    }
+
+    return $resultado
 }
 
 if ($Bootstrap) {
@@ -608,11 +1452,17 @@ if ($Report) {
     }
 }
 
-$aliasNames = @(@($map.profiles).alias)
+$aliasNames = @(Get-GeneratedCommandName -Map $map)
+$legacyRegions = if (Test-MapProperty -InputObject $map -Name 'legacyRegions') {
+    @($map.legacyRegions)
+} else {
+    @()
+}
 $blockLines = New-ManagedBlock -Map $map
 $targets = @(Get-ProfileTarget)
 
-Write-Host "Mapa: $resolvedMapPath ($($aliasNames.Count) perfis)"
+Write-Host "Mapa: $resolvedMapPath ($($aliasNames.Count) comandos)"
+Write-Host ("Comandos: " + (@($aliasNames) -join ', '))
 Write-Host "Bloco gerado: $($blockLines.Count) linhas, ASCII"
 Write-Host ''
 
@@ -631,17 +1481,27 @@ if (-not [string]::IsNullOrWhiteSpace($BlockOutPath)) {
 
 $results = foreach ($target in $targets) {
     $existingContent = if ($target.Exists) { [IO.File]::ReadAllText($target.Path) } else { '' }
-    $conflicts = @(Get-AliasConflict -Content $existingContent -AliasName $aliasNames)
+    # O conflito e medido no texto ja sem os blocos legados: apontar como
+    # duplicado algo que a propria sincronizacao vai remover so gera ruido.
+    $conflicts = @(
+        Get-AliasConflict `
+            -Content (Remove-LegacyRegion -Content $existingContent -Region $legacyRegions).Content `
+            -AliasName $aliasNames
+    )
 
     $outcome = Set-ManagedRegion `
         -Path $target.Path `
         -BlockLine $blockLines `
+        -LegacyRegion $legacyRegions `
         -Apply:$Execute
 
     Write-Host ("{0,-24} {1}" -f $target.Name, $outcome.Action)
     Write-Host ("  perfil: {0}" -f $target.Path)
     if ($outcome.Backup) {
         Write-Host ("  backup: {0}" -f $outcome.Backup)
+    }
+    foreach ($legado in @($outcome.LegacyRemoved)) {
+        Write-Host ("  legado removido: {0}" -f $legado) -ForegroundColor DarkYellow
     }
     if ($conflicts.Count -gt 0) {
         Write-Warning (
@@ -661,9 +1521,20 @@ $results = foreach ($target in $targets) {
     }
 }
 
+$terminal = Sync-TerminalTab -Map $map -Apply:$Execute
+if ($null -ne $terminal) {
+    Write-Host ''
+    Write-Host ("{0,-24} {1}" -f 'Windows Terminal', $(if ($terminal.Changed) { 'abas alinhadas' } else { 'sem mudanca' }))
+    Write-Host ("  settings: {0}" -f $terminal.Path)
+    if ($terminal.Backup) { Write-Host ("  backup: {0}" -f $terminal.Backup) }
+    foreach ($nome in @($terminal.Criadas)) { Write-Host ("  aba criada: {0}" -f $nome) }
+    foreach ($nome in @($terminal.Atualizadas)) { Write-Host ("  aba atualizada: {0}" -f $nome) }
+    foreach ($nome in @($terminal.Removidas)) { Write-Host ("  aba removida: {0}" -f $nome) -ForegroundColor DarkYellow }
+}
+
 if (-not $Execute) {
     Write-Host ''
-    Write-Host 'Dry-run: nenhum perfil alterado. Repita com -Execute para aplicar.'
+    Write-Host 'Dry-run: nada alterado. Repita com -Execute para aplicar.'
 }
 
 [pscustomobject]@{
@@ -673,4 +1544,5 @@ if (-not $Execute) {
     Aliases = $aliasNames.Count
     BlockLines = $blockLines.Count
     Targets = @($results)
+    Terminal = $terminal
 }
