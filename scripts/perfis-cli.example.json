@@ -68,6 +68,11 @@
       "warnPersonalUnder": [
         "D:\\repos"
       ],
+      "accounts": {
+        "pessoal": "ana@exemplo.com",
+        "trabalho": "ana@empresa.exemplo"
+      },
+      "shareCredentials": true,
       "commands": {
         "pessoal": [
           "PlanoPessoal",

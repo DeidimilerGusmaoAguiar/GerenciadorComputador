@@ -20,10 +20,17 @@ delas a sessao enxerga skills e hooks do perfil do usuario. Nesse formato a
 pasta decide a blindagem e o comando decide o lado, entao os atalhos gerados
 sao por lado, nao por diretorio de estado.
 
-Dry-run e o padrao. O script so escreve em arquivo de perfil do shell.
-Credencial nao passa por aqui: nem o script nem o codigo que ele gera abrem
-.credentials.json. O comando de status gerado le apenas o campo de
-identificacao de conta de .claude.json, para responder qual plano esta em uso.
+Dry-run e o padrao, e o script em si so escreve em arquivo de perfil do shell e
+nas abas do terminal.
+
+Sobre credencial: o SCRIPT nunca abre .credentials.json. O codigo que ele GERA
+abre, se o mapa pedir shareCredentials, e por um motivo: blindagem exige
+diretorios de estado separados, mas login e da conta, nao do diretorio. Sem isso
+seriam varios /login para a mesma conta. O codigo gerado le apenas metadados
+- se ha token e ate quando - e copia o arquivo inteiro entre diretorios do MESMO
+lado, nunca entre lados, e so quando a conta gravada no diretorio de origem e a
+declarada para aquele lado. O valor do token nunca e lido para variavel, impresso
+nem registrado.
 
 .EXAMPLE
 pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1 -Bootstrap -SearchRoot C:\Repos
@@ -589,6 +596,148 @@ function Get-PlanoConta {
     return "$email ($org)"
 }
 
+function Get-PlanoCredencial {
+    <#
+    .SYNOPSIS
+    Le a validade da credencial de um diretorio de estado, sem tocar no segredo.
+
+    .DESCRIPTION
+    Devolve so metadados: se ha token util e ate quando. O valor do token nunca
+    e lido para variavel, impresso nem registrado.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $arquivo = Join-Path $Path '.credentials.json'
+    $vazio = [pscustomobject]@{ Arquivo = $arquivo; Existe = $false; TemToken = $false; ExpiraEm = 0 }
+    if (-not (Test-Path -LiteralPath $arquivo -PathType Leaf)) { return $vazio }
+    try {
+        $dados = Get-Content -LiteralPath $arquivo -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        return $vazio
+    }
+    if ($dados.PSObject.Properties.Name -notcontains 'claudeAiOauth') { return $vazio }
+    $oauth = $dados.claudeAiOauth
+    $temToken = ($oauth.PSObject.Properties.Name -contains 'accessToken') -and
+        -not [string]::IsNullOrWhiteSpace([string]$oauth.accessToken)
+    $expira = 0
+    if ($oauth.PSObject.Properties.Name -contains 'expiresAt') { $expira = [double]$oauth.expiresAt }
+    return [pscustomobject]@{
+        Arquivo = $arquivo
+        Existe = $true
+        TemToken = $temToken
+        ExpiraEm = $expira
+    }
+}
+
+function Sync-PlanoCredencial {
+    <#
+    .SYNOPSIS
+    Uma credencial por CONTA, nao por diretorio de estado.
+
+    .DESCRIPTION
+    Blindagem exige diretorios separados, mas login e da conta. Antes de subir,
+    o diretorio com a credencial mais nova daquele lado abastece os irmaos que
+    estejam vazios ou atrasados. Assim um /login em qualquer lugar do lado vale
+    para o lado inteiro.
+
+    Duas travas: a copia nunca atravessa lados - pessoal e corporativo sao contas
+    diferentes - e so sai de diretorio cuja conta gravada e a declarada para
+    aquele lado. Sem a segunda trava, um /login trocado dentro de um diretorio
+    espalharia a conta errada por todos os irmaos, que e exatamente o defeito que
+    este arranjo existe para impedir.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Side
+    )
+
+    $rota = $script:PlanoRota[$Cli]
+    if (-not $rota.ShareCredentials) { return }
+    if (-not $rota.Accounts.ContainsKey($Side)) { return }
+    $contaEsperada = $rota.Accounts[$Side]
+
+    $irmaos = @()
+    foreach ($chave in $rota.Dir.Keys) {
+        if ($chave.StartsWith($Side + '|')) { $irmaos += $rota.Dir[$chave] }
+    }
+    if ($irmaos.Count -lt 2) { return }
+
+    $melhor = $null
+    foreach ($dir in $irmaos) {
+        $cred = Get-PlanoCredencial -Path $dir
+        if (-not $cred.TemToken) { continue }
+        # So e fonte confiavel se a conta gravada la for a do lado.
+        if ((Get-PlanoConta -Path $dir) -notlike ($contaEsperada + '*')) { continue }
+        if (($null -eq $melhor) -or ($cred.ExpiraEm -gt $melhor.Cred.ExpiraEm)) {
+            $melhor = [pscustomobject]@{ Home = $dir; Cred = $cred }
+        }
+    }
+    if ($null -eq $melhor) { return }
+
+    foreach ($dir in $irmaos) {
+        if ($dir -eq $melhor.Home) { continue }
+        $cred = Get-PlanoCredencial -Path $dir
+        if ($cred.TemToken -and ($cred.ExpiraEm -ge $melhor.Cred.ExpiraEm)) { continue }
+        # Diretorio com outra conta gravada nao e atrasado, e outro dono: avisar
+        # e nao mexer vale mais do que sobrescrever.
+        $contaDestino = Get-PlanoConta -Path $dir
+        if (($contaDestino -ne 'sem login') -and ($contaDestino -notlike ($contaEsperada + '*'))) {
+            Write-Host ('    atencao: ' + $dir + ' esta logado em ' + $contaDestino +
+                ', e nao em ' + $contaEsperada + '. Credencial NAO copiada.') -ForegroundColor Red
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        try {
+            Copy-Item -LiteralPath $melhor.Cred.Arquivo -Destination (Join-Path $dir '.credentials.json') -Force -ErrorAction Stop
+            Write-Host ('    login   : credencial de ' + $contaEsperada + ' propagada para ' + $dir) -ForegroundColor DarkGray
+        } catch {
+            Write-Host ('    atencao: nao consegui propagar a credencial para ' + $dir) -ForegroundColor DarkYellow
+        }
+    }
+}
+
+function Get-PlanoResumo {
+    <#
+    .SYNOPSIS
+    Junta identidade e validade de token numa frase so.
+
+    .DESCRIPTION
+    As duas coisas moram em arquivos diferentes e podem discordar: um diretorio
+    pode ter token utilizavel e ainda nao ter identidade gravada, porque a CLI so
+    escreve oauthAccount depois do primeiro uso. Dizer apenas "sem login" nesse
+    estado e mentira util para ninguem.
+    #>
+    param([Parameter(Mandatory)][string]$Path)
+
+    $conta = Get-PlanoConta -Path $Path
+    $cred = Get-PlanoCredencial -Path $Path
+    $agora = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $validade = ''
+    if ($cred.TemToken -and $cred.ExpiraEm -gt 0) {
+        $quando = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$cred.ExpiraEm).LocalDateTime.ToString('dd/MM HH:mm')
+        if ($cred.ExpiraEm -gt $agora) { $validade = 'token valido ate ' + $quando }
+        else { $validade = 'token vencido em ' + $quando + ', renova sozinho' }
+    }
+
+    if ($conta -eq 'sem login') {
+        if ($cred.TemToken) {
+            $texto = 'identidade ainda nao gravada - ' + $validade
+        } else {
+            $texto = 'sem login'
+        }
+    } elseif ($validade) {
+        $texto = $conta + ' - ' + $validade
+    } else {
+        $texto = $conta + ' - sem token'
+    }
+
+    return [pscustomobject]@{
+        Conta = $conta
+        TemToken = $cred.TemToken
+        Texto = $texto
+    }
+}
+
 function Get-PlanoSkill {
     param([Parameter(Mandatory)][string]$Path)
     $pasta = Join-Path $Path 'skills'
@@ -597,6 +746,14 @@ function Get-PlanoSkill {
 }
 
 function Write-PlanoCabecalho {
+    <#
+    .SYNOPSIS
+    Imprime o cabecalho e garante a credencial da conta antes de subir.
+
+    .DESCRIPTION
+    Imprimir e sincronizar andam juntos de proposito: o que aparece na tela e o
+    estado com que a sessao vai subir, e nao o de antes da sincronizacao.
+    #>
     param(
         [Parameter(Mandatory)]$Plano,
         [Parameter(Mandatory)][string]$Pasta
@@ -605,6 +762,25 @@ function Write-PlanoCabecalho {
     Write-Host ('  Plano ' + $Plano.Label) -ForegroundColor $Plano.Color
     Write-Host ('    estado : ' + $Plano.Home) -ForegroundColor DarkGray
     Write-Host ('    pasta  : ' + $Pasta) -ForegroundColor DarkGray
+
+    Sync-PlanoCredencial -Cli $Plano.Cli -Side $Plano.Side
+
+    $rota = $script:PlanoRota[$Plano.Cli]
+    $resumo = Get-PlanoResumo -Path $Plano.Home
+    $conta = $resumo.Conta
+    Write-Host ('    conta  : ' + $resumo.Texto) -ForegroundColor DarkGray
+    if ($rota.Accounts.ContainsKey($Plano.Side)) {
+        $esperada = $rota.Accounts[$Plano.Side]
+        if (-not $resumo.TemToken) {
+            Write-Host ('    atencao: sem credencial. Rode /login com ' + $esperada) -ForegroundColor DarkYellow
+        } elseif (($conta -ne 'sem login') -and ($conta -notlike ($esperada + '*'))) {
+            # Foi assim que uma sessao chamada "pessoal" apareceu gastando o
+            # plano corporativo: o nome dizia uma coisa, a pasta guardava outra.
+            Write-Host ('    ERRO   : este plano deveria ser ' + $esperada +
+                ' e esta em ' + $conta) -ForegroundColor Red
+        }
+    }
+
     if ($Plano.Shield -eq 'aberto') {
         Write-Host '    atencao: SEM BLINDAGEM - enxerga skills, hooks e agents do perfil do usuario' -ForegroundColor DarkYellow
     }
@@ -696,7 +872,20 @@ function Show-PlanoStatus {
         if ($lado -eq $automatico) { $marca = ' > ' }
         Write-Host ($marca + $plano.Label) -ForegroundColor $plano.Color
         Write-Host ('      estado : ' + $plano.Home) -ForegroundColor DarkGray
-        Write-Host ('      conta  : ' + (Get-PlanoConta -Path $plano.Home)) -ForegroundColor DarkGray
+        $resumo = Get-PlanoResumo -Path $plano.Home
+        $cor = 'DarkGray'
+        $nota = ''
+        if ($rota.Accounts.ContainsKey($lado)) {
+            $esperada = $rota.Accounts[$lado]
+            if (-not $resumo.TemToken) {
+                $cor = 'DarkYellow'
+                $nota = '   <- falta /login com ' + $esperada
+            } elseif (($resumo.Conta -ne 'sem login') -and ($resumo.Conta -notlike ($esperada + '*'))) {
+                $cor = 'Red'
+                $nota = '   <- DEVERIA SER ' + $esperada
+            }
+        }
+        Write-Host ('      conta  : ' + $resumo.Texto + $nota) -ForegroundColor $cor
         Write-Host ('      skills : ' + (Get-PlanoSkill -Path $plano.Home)) -ForegroundColor DarkGray
     }
     Write-Host ''
@@ -769,6 +958,17 @@ function New-RoutingLines {
 
     $warn = if (Test-MapProperty -InputObject $Routing -Name 'warnPersonalUnder') { @($Routing.warnPersonalUnder) } else { @() }
     $lines.Add("    WarnPersonalUnder = " + (ConvertTo-GeneratedList -Item @($warn | ForEach-Object { [string]$_ })))
+
+    $compartilha = (Test-MapProperty -InputObject $Routing -Name 'shareCredentials') -and [bool]$Routing.shareCredentials
+    $lines.Add("    ShareCredentials = `$" + $compartilha.ToString().ToLowerInvariant())
+    $lines.Add('    Accounts = @{')
+    if (Test-MapProperty -InputObject $Routing -Name 'accounts') {
+        foreach ($side in @($Routing.accounts.PSObject.Properties.Name)) {
+            $email = ([string]$Routing.accounts.$side).Replace("'", "''")
+            $lines.Add("        '$side' = '$email'")
+        }
+    }
+    $lines.Add('    }')
 
     $routes = if (Test-MapProperty -InputObject $Routing -Name 'routes') { @($Routing.routes) } else { @() }
     if (@($routes).Count -eq 0) {

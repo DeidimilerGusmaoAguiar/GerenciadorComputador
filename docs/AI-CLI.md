@@ -125,6 +125,35 @@ diretórios de estado. E um erro fica impossível de esconder — `PlanoAtual`
 imprime, para a pasta corrente, qual diretório de estado seria usado e qual conta
 está gravada nele.
 
+### Um login por conta, não por diretório
+
+Separar blindagem exige diretórios de estado distintos — mas a credencial mora
+dentro de cada diretório. A conta pessoal com dois escopos vira dois `/login`
+para a mesma pessoa, e cada renovação de token só vale para um lado. Quatro
+diretórios, quatro autenticações: o isolamento fica caro no uso diário.
+
+A saída é tratar o login como propriedade da **conta**. Antes de subir, o
+diretório com a credencial mais recente daquele lado abastece os irmãos que
+estejam vazios ou atrasados. Um `/login` em qualquer lugar do lado passa a valer
+para o lado inteiro, e a renovação se propaga sozinha no próximo uso.
+
+Duas travas fazem disso uma defesa em vez de um risco:
+
+- **a cópia nunca atravessa lados.** Pessoal e corporativo são contas
+  diferentes, e o mapa diz qual e-mail pertence a cada lado.
+- **só é fonte o diretório cuja conta gravada é a declarada para aquele lado.**
+  Sem essa trava, um `/login` trocado dentro de um diretório espalharia a conta
+  errada por todos os irmãos — que é exatamente o defeito que o arranjo existe
+  para impedir. Diretório logado em outra conta não é tratado como atrasado: é
+  denunciado em vermelho e não é tocado.
+
+Só metadados são lidos — se há token e até quando. O valor nunca é lido para
+variável, impresso nem registrado; o arquivo é copiado inteiro.
+
+Isso também dá o teste de sanidade que faltava: como o mapa declara o e-mail
+esperado de cada lado, qualquer sessão que suba com a conta errada é apontada no
+cabeçalho, antes do primeiro prompt.
+
 Duas defesas valem a pena junto com isso:
 
 - **avisar quando o lado padrão for pessoal dentro de uma raiz de trabalho.** A
@@ -194,9 +223,8 @@ Garantias que o script mantém:
   `terminal.tabs` é uma aba aposentada, e some; qualquer outro perfil fica como
   está. Se o arquivo tiver comentário — o Terminal aceita, `ConvertFrom-Json`
   não — o script avisa e não mexe, em vez de apagar a anotação;
-- credencial não passa pelo script nem pelo código que ele gera:
-  `.credentials.json` nunca é aberto. O comando de status lê apenas o campo de
-  identificação de conta, para responder qual plano está em uso;
+- o script em si nunca abre `.credentials.json`. O código gerado abre, quando o
+  mapa pede: veja **Um login por conta** abaixo.
 - a saída é ASCII puro, porque perfil sem BOM é lido como ANSI pelo 5.1;
 - o alvo é sempre um perfil de host descoberto em runtime, nunca um caminho
   arbitrário;
