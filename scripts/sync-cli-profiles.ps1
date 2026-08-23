@@ -629,6 +629,65 @@ function Get-PlanoCredencial {
     }
 }
 
+function Copy-PlanoIdentidade {
+    <#
+    .SYNOPSIS
+    Leva o oauthAccount para um diretorio que ainda nao tem nenhum.
+
+    .DESCRIPTION
+    Credencial sozinha nao basta: a CLI decide se ha login pelo oauthAccount do
+    .claude.json, e um diretorio virgem cai na tela de escolher metodo de login
+    mesmo com token valido ao lado. Medido em 23/08/2026.
+
+    A insercao e textual de proposito. Reserializar um .claude.json de dezenas de
+    KB com ConvertTo-Json arrisca estourar profundidade e truncar o arquivo do
+    usuario; aqui so o bloco pequeno e serializado, e o resto do texto nao e
+    tocado. O resultado e validado antes de substituir o arquivo.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$De,
+        [Parameter(Mandatory)][string]$Para
+    )
+
+    $origem = Join-Path $De '.claude.json'
+    $destino = Join-Path $Para '.claude.json'
+    if (-not (Test-Path -LiteralPath $origem -PathType Leaf)) { return $false }
+    try {
+        $dadosOrigem = Get-Content -LiteralPath $origem -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    if ($dadosOrigem.PSObject.Properties.Name -notcontains 'oauthAccount') { return $false }
+    $bloco = $dadosOrigem.oauthAccount | ConvertTo-Json -Depth 10 -Compress
+
+    if (-not (Test-Path -LiteralPath $destino -PathType Leaf)) {
+        [IO.File]::WriteAllText($destino, '{"oauthAccount":' + $bloco + '}', [Text.UTF8Encoding]::new($false))
+        return $true
+    }
+
+    $texto = [IO.File]::ReadAllText($destino)
+    try {
+        $atual = $texto | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    if ($atual.PSObject.Properties.Name -contains 'oauthAccount') { return $false }
+
+    $abre = $texto.IndexOf('{')
+    if ($abre -lt 0) { return $false }
+    $resto = $texto.Substring($abre + 1)
+    $virgula = if ($resto.TrimStart().StartsWith('}')) { '' } else { ',' }
+    $novo = $texto.Substring(0, $abre + 1) + '"oauthAccount":' + $bloco + $virgula + $resto
+
+    try {
+        $null = $novo | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+    [IO.File]::WriteAllText($destino, $novo, [Text.UTF8Encoding]::new($false))
+    return $true
+}
+
 function Sync-PlanoCredencial {
     <#
     .SYNOPSIS
@@ -690,6 +749,10 @@ function Sync-PlanoCredencial {
         try {
             Copy-Item -LiteralPath $melhor.Cred.Arquivo -Destination (Join-Path $dir '.credentials.json') -Force -ErrorAction Stop
             Write-Host ('    login   : credencial de ' + $contaEsperada + ' propagada para ' + $dir) -ForegroundColor DarkGray
+            # Sem a identidade junto, a CLI ignora o token e pede login de novo.
+            if (Copy-PlanoIdentidade -De $melhor.Home -Para $dir) {
+                Write-Host '    login   : identidade da conta gravada junto' -ForegroundColor DarkGray
+            }
         } catch {
             Write-Host ('    atencao: nao consegui propagar a credencial para ' + $dir) -ForegroundColor DarkYellow
         }
