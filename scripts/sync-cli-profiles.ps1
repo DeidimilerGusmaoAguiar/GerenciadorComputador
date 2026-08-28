@@ -1066,17 +1066,17 @@ function New-RoutingLines {
     $lines.Add('')
     $lines.Add("# ---- comandos de $Cli ----")
     $lines.Add("function $($catalog.Command) {")
-    $lines.Add('    param([Parameter(ValueFromRemainingArguments)][object[]]$Rest)')
+    $lines.Add('    # Sem param(): um parametro proprio faria o binder casar -r ou -c da CLI')
+    $lines.Add('    # como prefixo dele e a chamada morreria antes de abrir a CLI.')
     $lines.Add("    `$lado = Get-PlanoLado -Cli '$Cli' -Path (Get-PlanoPastaAtual)")
-    $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side `$lado @Rest")
+    $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side `$lado -Rest `$args")
     $lines.Add('}')
 
     foreach ($side in $sides) {
         $nomes = @($Routing.commands.$side)
         $canonico = [string]$nomes[0]
         $lines.Add("function $canonico {")
-        $lines.Add('    param([Parameter(ValueFromRemainingArguments)][object[]]$Rest)')
-        $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side '$side' @Rest")
+        $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side '$side' -Rest `$args")
         $lines.Add('}')
         foreach ($apelido in @($nomes | Select-Object -Skip 1)) {
             $lines.Add("Set-Alias -Name $apelido -Value $canonico -Scope Global -Force")
@@ -1098,13 +1098,12 @@ function New-RoutingLines {
     if (Test-MapProperty -InputObject $Routing -Name 'askCommand') {
         $nome = [string]$Routing.askCommand
         $lines.Add("function $nome {")
-        $lines.Add('    param([Parameter(ValueFromRemainingArguments)][object[]]$Rest)')
         $lines.Add("    `$lado = Select-PlanoLado -Cli '$Cli'")
         $lines.Add('    if ([string]::IsNullOrWhiteSpace($lado)) {')
         $lines.Add("        Write-Host '  Opcao invalida. Abortado.' -ForegroundColor Red")
         $lines.Add('        return')
         $lines.Add('    }')
-        $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side `$lado @Rest")
+        $lines.Add("    Invoke-PlanoCli -Cli '$Cli' -Side `$lado -Rest `$args")
         $lines.Add('}')
         if (Test-MapProperty -InputObject $Routing -Name 'askAliases') {
             foreach ($apelido in @($Routing.askAliases)) {
@@ -1234,7 +1233,7 @@ function New-ManagedBlock {
                 "-Variable '$($catalog.Variable)' " +
                 "-ProfileHome $(ConvertTo-GeneratedPath -Path ([string]$entry.home)) " +
                 "-Label '$([string]$entry.label -replace "'", "''")' " +
-                "-Color $($entry.color) @args"
+                "-Color $($entry.color) -Rest `$args"
             )
             $lines.Add('}')
         }
