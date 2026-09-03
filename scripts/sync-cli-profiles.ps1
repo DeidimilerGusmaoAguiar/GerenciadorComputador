@@ -30,7 +30,9 @@ seriam varios /login para a mesma conta. O codigo gerado le apenas metadados
 - se ha token e ate quando - e copia o arquivo inteiro entre diretorios do MESMO
 lado, nunca entre lados, e so quando a conta gravada no diretorio de origem e a
 declarada para aquele lado. O valor do token nunca e lido para variavel, impresso
-nem registrado.
+nem registrado. Junto com a credencial vao a identidade (oauthAccount) e a marca
+de onboarding (hasCompletedOnboarding) do .claude.json: sem qualquer uma delas a
+CLI pede login mesmo com token valido ao lado.
 
 .EXAMPLE
 pwsh -NoProfile -File .\scripts\sync-cli-profiles.ps1 -Bootstrap -SearchRoot C:\Repos
@@ -632,60 +634,87 @@ function Get-PlanoCredencial {
 function Copy-PlanoIdentidade {
     <#
     .SYNOPSIS
-    Leva o oauthAccount para um diretorio que ainda nao tem nenhum.
+    Leva a identidade da conta e a marca de onboarding para um diretorio que
+    ainda nao as tem.
 
     .DESCRIPTION
-    Credencial sozinha nao basta: a CLI decide se ha login pelo oauthAccount do
-    .claude.json, e um diretorio virgem cai na tela de escolher metodo de login
-    mesmo com token valido ao lado. Medido em 23/08/2026.
+    Credencial sozinha nao basta, e sao dois os campos do .claude.json que a CLI
+    consulta antes de olhar o token:
+
+    - oauthAccount: sem ele a CLI ignora o token e pede login de novo. Medido em
+      23/08/2026.
+    - hasCompletedOnboarding: sem ele a CLI abre o assistente de primeira
+      execucao, que traz o passo de login no meio, e o token valido ao lado nao
+      e consultado. Medido em 02/09/2026 no diretorio padrao, que tinha token e
+      oauthAccount e mesmo assim caiu na tela de login.
+
+    Cada campo que falta e buscado na primeira origem da lista que o tenha; a
+    marca de onboarding so e copiada quando e verdadeira na origem. Devolve os
+    nomes dos campos gravados, ou nada quando nao havia o que gravar.
 
     A insercao e textual de proposito. Reserializar um .claude.json de dezenas de
     KB com ConvertTo-Json arrisca estourar profundidade e truncar o arquivo do
-    usuario; aqui so o bloco pequeno e serializado, e o resto do texto nao e
-    tocado. O resultado e validado antes de substituir o arquivo.
+    usuario; aqui so os blocos pequenos sao serializados, e o resto do texto nao
+    e tocado. O resultado e validado antes de substituir o arquivo.
     #>
     param(
-        [Parameter(Mandatory)][string]$De,
+        [Parameter(Mandatory)][string[]]$De,
         [Parameter(Mandatory)][string]$Para
     )
 
-    $origem = Join-Path $De '.claude.json'
     $destino = Join-Path $Para '.claude.json'
-    if (-not (Test-Path -LiteralPath $origem -PathType Leaf)) { return $false }
-    try {
-        $dadosOrigem = Get-Content -LiteralPath $origem -Raw -ErrorAction Stop | ConvertFrom-Json
-    } catch {
-        return $false
-    }
-    if ($dadosOrigem.PSObject.Properties.Name -notcontains 'oauthAccount') { return $false }
-    $bloco = $dadosOrigem.oauthAccount | ConvertTo-Json -Depth 10 -Compress
-
-    if (-not (Test-Path -LiteralPath $destino -PathType Leaf)) {
-        [IO.File]::WriteAllText($destino, '{"oauthAccount":' + $bloco + '}', [Text.UTF8Encoding]::new($false))
-        return $true
+    $texto = ''
+    $atual = $null
+    if (Test-Path -LiteralPath $destino -PathType Leaf) {
+        $texto = [IO.File]::ReadAllText($destino)
+        try {
+            $atual = $texto | ConvertFrom-Json
+        } catch {
+            return @()
+        }
     }
 
-    $texto = [IO.File]::ReadAllText($destino)
-    try {
-        $atual = $texto | ConvertFrom-Json
-    } catch {
-        return $false
+    $faltam = [ordered]@{}
+    foreach ($campo in @('oauthAccount', 'hasCompletedOnboarding')) {
+        if (($null -ne $atual) -and ($atual.PSObject.Properties.Name -contains $campo)) { continue }
+        foreach ($origem in $De) {
+            $arquivo = Join-Path $origem '.claude.json'
+            if (-not (Test-Path -LiteralPath $arquivo -PathType Leaf)) { continue }
+            try {
+                $dados = Get-Content -LiteralPath $arquivo -Raw -ErrorAction Stop | ConvertFrom-Json
+            } catch {
+                continue
+            }
+            if ($dados.PSObject.Properties.Name -notcontains $campo) { continue }
+            if (($campo -eq 'hasCompletedOnboarding') -and ($dados.$campo -ne $true)) { continue }
+            $faltam[$campo] = ($dados.$campo | ConvertTo-Json -Depth 10 -Compress)
+            break
+        }
     }
-    if ($atual.PSObject.Properties.Name -contains 'oauthAccount') { return $false }
+    if ($faltam.Count -eq 0) { return @() }
+
+    $partes = @()
+    foreach ($campo in $faltam.Keys) { $partes += ('"' + $campo + '":' + $faltam[$campo]) }
+    $bloco = $partes -join ','
+
+    if ($null -eq $atual) {
+        [IO.File]::WriteAllText($destino, '{' + $bloco + '}', [Text.UTF8Encoding]::new($false))
+        return @($faltam.Keys)
+    }
 
     $abre = $texto.IndexOf('{')
-    if ($abre -lt 0) { return $false }
+    if ($abre -lt 0) { return @() }
     $resto = $texto.Substring($abre + 1)
     $virgula = if ($resto.TrimStart().StartsWith('}')) { '' } else { ',' }
-    $novo = $texto.Substring(0, $abre + 1) + '"oauthAccount":' + $bloco + $virgula + $resto
+    $novo = $texto.Substring(0, $abre + 1) + $bloco + $virgula + $resto
 
     try {
         $null = $novo | ConvertFrom-Json
     } catch {
-        return $false
+        return @()
     }
     [IO.File]::WriteAllText($destino, $novo, [Text.UTF8Encoding]::new($false))
-    return $true
+    return @($faltam.Keys)
 }
 
 function Sync-PlanoCredencial {
@@ -733,25 +762,43 @@ function Sync-PlanoCredencial {
     }
     if ($null -eq $melhor) { return }
 
+    # Origens de identidade: todo irmao cuja conta gravada e a do lado, com o
+    # dono da melhor credencial na frente. A lista e mais larga que a fonte da
+    # credencial de proposito: o diretorio com o token mais novo pode ser
+    # justamente o que nunca completou o onboarding.
+    $origensIdentidade = @($melhor.Home)
     foreach ($dir in $irmaos) {
         if ($dir -eq $melhor.Home) { continue }
+        if ((Get-PlanoConta -Path $dir) -like ($contaEsperada + '*')) { $origensIdentidade += $dir }
+    }
+
+    foreach ($dir in $irmaos) {
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
         $cred = Get-PlanoCredencial -Path $dir
-        if ($cred.TemToken -and ($cred.ExpiraEm -ge $melhor.Cred.ExpiraEm)) { continue }
+        $atrasado = ($dir -ne $melhor.Home) -and
+            -not ($cred.TemToken -and ($cred.ExpiraEm -ge $melhor.Cred.ExpiraEm))
         # Diretorio com outra conta gravada nao e atrasado, e outro dono: avisar
         # e nao mexer vale mais do que sobrescrever.
         $contaDestino = Get-PlanoConta -Path $dir
         if (($contaDestino -ne 'sem login') -and ($contaDestino -notlike ($contaEsperada + '*'))) {
-            Write-Host ('    atencao: ' + $dir + ' esta logado em ' + $contaDestino +
-                ', e nao em ' + $contaEsperada + '. Credencial NAO copiada.') -ForegroundColor Red
+            if ($atrasado) {
+                Write-Host ('    atencao: ' + $dir + ' esta logado em ' + $contaDestino +
+                    ', e nao em ' + $contaEsperada + '. Credencial NAO copiada.') -ForegroundColor Red
+            }
             continue
         }
-        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
         try {
-            Copy-Item -LiteralPath $melhor.Cred.Arquivo -Destination (Join-Path $dir '.credentials.json') -Force -ErrorAction Stop
-            Write-Host ('    login   : credencial de ' + $contaEsperada + ' propagada para ' + $dir) -ForegroundColor DarkGray
-            # Sem a identidade junto, a CLI ignora o token e pede login de novo.
-            if (Copy-PlanoIdentidade -De $melhor.Home -Para $dir) {
-                Write-Host '    login   : identidade da conta gravada junto' -ForegroundColor DarkGray
+            if ($atrasado) {
+                Copy-Item -LiteralPath $melhor.Cred.Arquivo -Destination (Join-Path $dir '.credentials.json') -Force -ErrorAction Stop
+                Write-Host ('    login   : credencial de ' + $contaEsperada + ' propagada para ' + $dir) -ForegroundColor DarkGray
+            }
+            # Token no lugar nao basta. Sem oauthAccount a CLI pede login; sem
+            # hasCompletedOnboarding ela abre o assistente de primeira execucao,
+            # que pede login no meio. Vale para todo irmao com token, inclusive
+            # o que acabou de ser eleito fonte da credencial.
+            $gravados = @(Copy-PlanoIdentidade -De $origensIdentidade -Para $dir)
+            if ($gravados.Count -gt 0) {
+                Write-Host ('    login   : ' + ($gravados -join ' e ') + ' gravado em ' + $dir) -ForegroundColor DarkGray
             }
         } catch {
             Write-Host ('    atencao: nao consegui propagar a credencial para ' + $dir) -ForegroundColor DarkYellow

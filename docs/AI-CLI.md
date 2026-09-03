@@ -150,6 +150,27 @@ Duas travas fazem disso uma defesa em vez de um risco:
 Só metadados são lidos — se há token e até quando. O valor nunca é lido para
 variável, impresso nem registrado; o arquivo é copiado inteiro.
 
+A credencial não viaja sozinha. A CLI decide se há login por dois campos do
+`.claude.json` do diretório de estado, e só depois olha o token:
+
+- **`oauthAccount`** — sem ele, a CLI ignora o token e pede login;
+- **`hasCompletedOnboarding`** — sem ele, a CLI abre o assistente de primeira
+  execução, que traz o passo de login no meio. Um diretório que só rodou a CLI
+  em modo não interativo nunca ganha essa marca, mesmo com token válido e conta
+  gravada.
+
+Antes de subir, todo diretório do lado que tenha token recebe o que faltar
+desses dois campos, vindo de um irmão logado na conta esperada — inclusive o
+dono da credencial mais nova, que pode ser justamente o que nunca completou uma
+sessão interativa.
+
+Uma armadilha do diretório padrão: com `CLAUDE_CONFIG_DIR` apontando para
+`~\.claude`, a CLI lê `~\.claude\.claude.json`; sem a variável, lê
+`~\.claude.json`. São dois arquivos distintos, e o primeiro nasce virgem mesmo
+quando o segundo já tem a conta e o onboarding feitos. Foi assim que, em
+02/09/2026, a zona sem blindagem subiu com token válido no cabeçalho e caiu na
+tela de login.
+
 Isso também dá o teste de sanidade que faltava: como o mapa declara o e-mail
 esperado de cada lado, qualquer sessão que suba com a conta errada é apontada no
 cabeçalho, antes do primeiro prompt.

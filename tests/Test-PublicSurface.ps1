@@ -253,7 +253,10 @@ foreach ($requiredSyncMarker in @(
     'ReparsePoint',
     # Sem isto o perfil do PowerShell 7 fica com a variavel vazia em lugar de
     # remove-la, e a proxima invocacao herda um diretorio de estado errado.
-    'NullString]::Value'
+    'NullString]::Value',
+    # Sem isto um diretorio com token e conta gravada ainda cai no assistente
+    # de primeira execucao da CLI, que pede login no meio.
+    'hasCompletedOnboarding'
 )) {
     Assert-PublicCondition `
         -Condition $syncProfilesContent.Contains($requiredSyncMarker) `
