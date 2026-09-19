@@ -119,11 +119,13 @@ A saída é separar as duas perguntas e dar cada uma a quem sabe respondê-la:
   `claude` numa pasta declarada abre o lado daquela pasta; em qualquer outra,
   abre o lado padrão.
 
-Com isso o conjunto de nomes para de crescer: dois lados, um comando de menu
-(`Planos`) e um de diagnóstico (`PlanoAtual`) cobrem qualquer número de
-diretórios de estado. E um erro fica impossível de esconder — `PlanoAtual`
-imprime, para a pasta corrente, qual diretório de estado seria usado e qual conta
-está gravada nele.
+Com isso o conjunto de nomes para de crescer: um comando por lado, um comando de
+menu (`Planos`) e um de diagnóstico (`PlanoAtual`) cobrem qualquer número de
+diretórios de estado. Lado novo — um terceiro plano, um cliente, um escopo de
+estudo — é uma entrada no mapa: dois diretórios de estado, um nome de comando, e
+o menu e o diagnóstico passam a listá-lo sem nenhuma linha de código nova. E um
+erro fica impossível de esconder — `PlanoAtual` imprime, para a pasta corrente,
+qual diretório de estado seria usado e qual conta está gravada nele.
 
 ### Um login por conta, não por diretório
 
