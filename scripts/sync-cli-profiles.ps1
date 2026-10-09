@@ -426,6 +426,23 @@ function Test-ProfileMap {
                     'sem isso uma chave esquecida no ambiente derrubaria as sessoes do plano.'
                 )
             }
+            $temBudget = Test-MapProperty -InputObject $api -Name 'budgetFile'
+            $temLedger = Test-MapProperty -InputObject $api -Name 'ledgerFile'
+            if ($temBudget -ne $temLedger) {
+                throw "routing.$cliName.apiKeys precisa de budgetFile e ledgerFile juntos: orcamento sem registro nao confere gasto."
+            }
+            if (Test-MapProperty -InputObject $api -Name 'budgetCommand') {
+                if (-not $temBudget) {
+                    throw "routing.$cliName.apiKeys.budgetCommand sem budgetFile."
+                }
+                $nome = [string]$api.budgetCommand
+                if ($nome -notmatch '^[A-Za-z][\w\-]*$') {
+                    throw "Comando invalido para funcao do PowerShell: $nome"
+                }
+                if (-not $seen.Add($nome)) {
+                    throw "Comando repetido no mapa: $nome"
+                }
+            }
             if (Test-MapProperty -InputObject $api -Name 'runner') {
                 if (@($api.runner | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -eq 0) {
                     throw "routing.$cliName.apiKeys.runner vazio."
@@ -1309,6 +1326,214 @@ function Invoke-PlanoCli {
     }
 }
 
+function Get-PlanoArgValor {
+    # Valor de uma flag nos dois formatos: "--nome valor" e "--nome=valor".
+    param([AllowEmptyCollection()][object[]]$Lista = @(), [Parameter(Mandatory)][string]$Nome)
+    $itens = @($Lista)
+    for ($i = 0; $i -lt $itens.Count; $i++) {
+        $a = [string]$itens[$i]
+        if ($a -eq $Nome -and ($i + 1) -lt $itens.Count) { return [string]$itens[$i + 1] }
+        if ($a.StartsWith($Nome + '=')) { return $a.Substring($Nome.Length + 1) }
+    }
+    return $null
+}
+
+function Get-PlanoApiOrcamento {
+    param([Parameter(Mandatory)][string]$Cli)
+    $api = $script:PlanoRota[$Cli].ApiKey
+    if (-not (Test-Path -LiteralPath $api.BudgetFile)) {
+        Write-Host ('  Orcamento de credito nao encontrado: ' + $api.BudgetFile) -ForegroundColor Red
+        return $null
+    }
+    try {
+        return (Get-Content -LiteralPath $api.BudgetFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+    } catch {
+        Write-Host ('  Orcamento de credito ilegivel: ' + $api.BudgetFile) -ForegroundColor Red
+        return $null
+    }
+}
+
+function Get-PlanoApiCiclo {
+    <#
+    .SYNOPSIS
+    Inicio e fim do ciclo de cobranca corrente de um lado.
+
+    .DESCRIPTION
+    O credito renova no dia de cobranca da assinatura, nao no dia 1. Mes curto
+    leva o dia para o ultimo dia do mes.
+    #>
+    param([Parameter(Mandatory)]$Orcamento, [Parameter(Mandatory)][string]$Side)
+    $dia = 1
+    $porCiclo = 0.0
+    if ($Orcamento.lados.PSObject.Properties.Name -contains $Side) {
+        $cfg = $Orcamento.lados.$Side
+        if ($cfg.PSObject.Properties.Name -contains 'renovacaoDia') { $dia = [int]$cfg.renovacaoDia }
+        if ($cfg.PSObject.Properties.Name -contains 'porCiclo') { $porCiclo = [double]$cfg.porCiclo }
+    }
+    $hoje = (Get-Date).Date
+    $ini = New-Object DateTime ($hoje.Year, $hoje.Month, [Math]::Min($dia, [DateTime]::DaysInMonth($hoje.Year, $hoje.Month)))
+    if ($ini -gt $hoje) {
+        $m = $hoje.AddMonths(-1)
+        $ini = New-Object DateTime ($m.Year, $m.Month, [Math]::Min($dia, [DateTime]::DaysInMonth($m.Year, $m.Month)))
+    }
+    $p = $ini.AddMonths(1)
+    $fim = New-Object DateTime ($p.Year, $p.Month, [Math]::Min($dia, [DateTime]::DaysInMonth($p.Year, $p.Month)))
+    return [pscustomobject]@{ Inicio = $ini; Fim = $fim; PorCiclo = $porCiclo }
+}
+
+function Find-PlanoApiAlocacao {
+    # Alocacao da pasta corrente naquele lado; a raiz mais especifica vence.
+    param([Parameter(Mandatory)]$Orcamento, [Parameter(Mandatory)][string]$Side, [Parameter(Mandatory)][string]$Pasta)
+    $melhor = $null
+    foreach ($a in @($Orcamento.alocacoes)) {
+        if ([string]$a.lado -ne $Side) { continue }
+        if (-not (Test-PlanoDentroDe -Path $Pasta -Root ([string]$a.raiz))) { continue }
+        if ((-not $melhor) -or (([string]$a.raiz).Length -gt ([string]$melhor.raiz).Length)) { $melhor = $a }
+    }
+    return $melhor
+}
+
+function Get-PlanoApiRegistro {
+    # Entradas do registro dentro do ciclo. Custo medido vale; sem medida, vale o teto.
+    param([Parameter(Mandatory)][string]$Arquivo, [Parameter(Mandatory)]$Ciclo)
+    $saida = @()
+    if (-not (Test-Path -LiteralPath $Arquivo)) { return $saida }
+    foreach ($linha in Get-Content -LiteralPath $Arquivo -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($linha)) { continue }
+        try { $e = $linha | ConvertFrom-Json } catch { continue }
+        # O PowerShell 7 ja entrega data ISO convertida em DateTime; o 5.1 entrega texto.
+        if ($e.quando -is [datetime]) {
+            $quando = $e.quando
+        } else {
+            $quando = [datetime]::ParseExact([string]$e.quando, 'yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+        }
+        if ($quando -lt $Ciclo.Inicio -or $quando -ge $Ciclo.Fim) { continue }
+        $valor = 0.0
+        if ($null -ne $e.custo) { $valor = [double]$e.custo } elseif ($null -ne $e.teto) { $valor = [double]$e.teto }
+        $saida += [pscustomobject]@{ Lado = [string]$e.lado; Projeto = [string]$e.projeto; Valor = $valor; Medido = ($null -ne $e.custo) }
+    }
+    return $saida
+}
+
+function Test-PlanoApiOrcamento {
+    <#
+    .SYNOPSIS
+    Decide se a chamada cabe na alocacao do projeto no ciclo. Imprime o motivo
+    da recusa e devolve $null; ou devolve a conta da chamada.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Side,
+        [Parameter(Mandatory)][string]$Pasta,
+        [Parameter(Mandatory)][bool]$EhCli,
+        [AllowEmptyCollection()][object[]]$Argumentos = @()
+    )
+    $api = $script:PlanoRota[$Cli].ApiKey
+    $orc = Get-PlanoApiOrcamento -Cli $Cli
+    if (-not $orc) { return $null }
+    $aloc = Find-PlanoApiAlocacao -Orcamento $orc -Side $Side -Pasta $Pasta
+    if (-not $aloc) {
+        Write-Host ('  Recusado: sem alocacao de credito ' + $Side + ' para ' + $Pasta + '.') -ForegroundColor Red
+        Write-Host ('  O orcamento e do repositorio que gerencia os planos (' + $api.BudgetFile + '): peca ao dono.') -ForegroundColor DarkGray
+        return $null
+    }
+    $teto = $null
+    $captura = $false
+    if ($EhCli) {
+        $texto = Get-PlanoArgValor -Lista $Argumentos -Nome '--max-budget-usd'
+        $n = 0.0
+        if ([string]::IsNullOrWhiteSpace($texto) -or
+            -not [double]::TryParse($texto, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$n) -or
+            $n -le 0) {
+            Write-Host '  Recusado: toda chamada precisa de --max-budget-usd <valor> (ex.: --max-budget-usd 1).' -ForegroundColor Red
+            return $null
+        }
+        $teto = $n
+        $formato = Get-PlanoArgValor -Lista $Argumentos -Nome '--output-format'
+        $captura = ($formato -eq 'json') -or ($formato -eq 'stream-json')
+    }
+    $ciclo = Get-PlanoApiCiclo -Orcamento $orc -Side $Side
+    $gasto = 0.0
+    foreach ($e in @(Get-PlanoApiRegistro -Arquivo $api.LedgerFile -Ciclo $ciclo)) {
+        if ($e.Lado -eq $Side -and $e.Projeto -eq [string]$aloc.projeto) { $gasto += $e.Valor }
+    }
+    $limite = [double]$aloc.teto
+    $reserva = 0.0
+    if ($null -ne $teto) { $reserva = $teto }
+    if (($gasto + $reserva) -gt ($limite + 0.000001)) {
+        Write-Host ('  Recusado: ' + [string]$aloc.projeto + ' ja gastou US$ ' + $gasto.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) +
+            ' de US$ ' + $limite.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) + ' (' + $Side + ', ciclo ' +
+            $ciclo.Inicio.ToString('dd/MM') + ' a ' + $ciclo.Fim.AddDays(-1).ToString('dd/MM') + ')' +
+            $(if ($null -ne $teto) { '; esta chamada pede ate US$ ' + $teto.ToString('0.00', [Globalization.CultureInfo]::InvariantCulture) } else { '' }) + '.') -ForegroundColor Red
+        Write-Host '  Mais credito para o projeto e decisao do dono, no orcamento do repositorio que gerencia os planos.' -ForegroundColor DarkGray
+        return $null
+    }
+    return [pscustomobject]@{
+        Projeto = [string]$aloc.projeto
+        Teto = $teto
+        Limite = $limite
+        Gasto = $gasto
+        Captura = $captura
+        Ciclo = $ciclo
+    }
+}
+
+function Add-PlanoApiRegistro {
+    # Uma linha JSON por chamada. Varias sessoes podem gravar juntas: tenta de novo.
+    param([Parameter(Mandatory)][string]$Arquivo, [Parameter(Mandatory)]$Dados)
+    $linha = ([pscustomobject]$Dados | ConvertTo-Json -Compress) + "`n"
+    $pasta = Split-Path -Parent $Arquivo
+    if (-not (Test-Path -LiteralPath $pasta)) { $null = New-Item -ItemType Directory -Path $pasta -Force }
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($linha)
+    for ($i = 0; $i -lt 20; $i++) {
+        try {
+            $fs = [IO.File]::Open($Arquivo, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try { $fs.Write($bytes, 0, $bytes.Length) } finally { $fs.Close() }
+            return
+        } catch {
+            Start-Sleep -Milliseconds 150
+        }
+    }
+    Write-Host ('  atencao: nao consegui gravar o registro de credito em ' + $Arquivo) -ForegroundColor Red
+}
+
+function Show-PlanoApiSaldo {
+    param([Parameter(Mandatory)][string]$Cli)
+    $api = $script:PlanoRota[$Cli].ApiKey
+    $orc = Get-PlanoApiOrcamento -Cli $Cli
+    if (-not $orc) { return }
+    $inv = [Globalization.CultureInfo]::InvariantCulture
+    Write-Host ''
+    Write-Host ('  Credito de API - orcamento: ' + $api.BudgetFile) -ForegroundColor White
+    foreach ($lado in @($api.Entry.Keys | Sort-Object)) {
+        $ciclo = Get-PlanoApiCiclo -Orcamento $orc -Side $lado
+        $entradas = @(Get-PlanoApiRegistro -Arquivo $api.LedgerFile -Ciclo $ciclo | Where-Object { $_.Lado -eq $lado })
+        $alocs = @($orc.alocacoes | Where-Object { [string]$_.lado -eq $lado })
+        $alocado = 0.0; foreach ($a in $alocs) { $alocado += [double]$a.teto }
+        $gasto = 0.0; foreach ($e in $entradas) { $gasto += $e.Valor }
+        $cor = 'Gray'
+        if ($script:PlanoRota[$Cli].Color.ContainsKey($lado + '|blindado')) { $cor = $script:PlanoRota[$Cli].Color[$lado + '|blindado'] }
+        Write-Host ''
+        Write-Host ('  ' + $lado + '  ciclo ' + $ciclo.Inicio.ToString('dd/MM') + ' a ' + $ciclo.Fim.AddDays(-1).ToString('dd/MM') +
+            '   US$ ' + $ciclo.PorCiclo.ToString('0', $inv) + ' por ciclo   alocado ' + $alocado.ToString('0.00', $inv) +
+            '   gasto ' + $gasto.ToString('0.00', $inv) + '   livre ' + ($ciclo.PorCiclo - $gasto).ToString('0.00', $inv)) -ForegroundColor $cor
+        if ($alocado -gt $ciclo.PorCiclo) {
+            Write-Host ('     atencao: alocado passa do credito do ciclo') -ForegroundColor Red
+        }
+        foreach ($a in $alocs) {
+            $doProjeto = @($entradas | Where-Object { $_.Projeto -eq [string]$a.projeto })
+            $g = 0.0; foreach ($e in $doProjeto) { $g += $e.Valor }
+            $estimadas = @($doProjeto | Where-Object { -not $_.Medido }).Count
+            $nota = ''
+            if ($estimadas -gt 0) { $nota = '   (' + $estimadas + ' sem custo medido, contadas pelo teto)' }
+            Write-Host ('     {0,-16} teto {1,7}   gasto {2,7}   resta {3,7}   {4} chamada(s){5}' -f [string]$a.projeto,
+                ([double]$a.teto).ToString('0.00', $inv), $g.ToString('0.00', $inv), ([double]$a.teto - $g).ToString('0.00', $inv),
+                $doProjeto.Count, $nota) -ForegroundColor DarkGray
+        }
+    }
+    Write-Host ''
+}
+
 function Invoke-PlanoApi {
     <#
     .SYNOPSIS
@@ -1360,6 +1585,13 @@ function Invoke-PlanoApi {
         $programa = Resolve-CliExecutable -Command $rota.Command
     }
 
+    # Orcamento antes do cofre: recusa nao deve pedir senha a ninguem.
+    $conta = $null
+    if (-not [string]::IsNullOrWhiteSpace($api.BudgetFile)) {
+        $conta = Test-PlanoApiOrcamento -Cli $Cli -Side $Side -Pasta (Get-PlanoPastaAtual) -EhCli ([bool]$plano) -Argumentos $resto
+        if (-not $conta) { return }
+    }
+
     if (-not (Test-Path -LiteralPath $api.VaultScript)) {
         Write-Host ('  Cofre indisponivel: script nao encontrado em ' + $api.VaultScript) -ForegroundColor Red
         return
@@ -1389,6 +1621,12 @@ function Invoke-PlanoApi {
     Write-Host ''
     Write-Host ('  API ' + $Side + ': cobra a organizacao vinculada ao plano ' + $Side + ', nao o limite do plano') -ForegroundColor $cor
     Write-Host ('    chave : cofre ' + (Split-Path -Leaf $api.VaultFile) + ' / ' + $api.Entry[$Side] + ' (so no processo filho)') -ForegroundColor DarkGray
+    if ($conta) {
+        $inv = [Globalization.CultureInfo]::InvariantCulture
+        Write-Host ('    conta : ' + $conta.Projeto + ' gastou US$ ' + $conta.Gasto.ToString('0.00', $inv) + ' de US$ ' +
+            $conta.Limite.ToString('0.00', $inv) + ' no ciclo' +
+            $(if ($null -ne $conta.Teto) { '; teto desta chamada US$ ' + $conta.Teto.ToString('0.00', $inv) } else { '' })) -ForegroundColor DarkGray
+    }
     if ($plano) {
         Write-Host ('    estado: ' + $plano.Home) -ForegroundColor DarkGray
         # O historico continua comum: a transcricao do -p cai no mesmo armazem.
@@ -1399,11 +1637,35 @@ function Invoke-PlanoApi {
     $had = Test-Path ('Env:\' + $rota.Variable)
     $anterior = [Environment]::GetEnvironmentVariable($rota.Variable)
     $guardadas = Save-PlanoCredencialEnv -Cli $Cli
+    $inicio = Get-Date
+    $custo = $null
+    $sessao = $null
+    $codigo = $null
     try {
         if ($plano) { [Environment]::SetEnvironmentVariable($rota.Variable, $plano.Home) }
         [Environment]::SetEnvironmentVariable($api.Variable, $valor)
         $valor = $null
-        & $programa @resto
+        if ($conta -and $conta.Captura) {
+            # Saida JSON so chega no fim: ler a linha no caminho nao atrasa nada.
+            # UTF-8 durante a chamada para acento nao virar lixo no console.
+            $codificacao = [Console]::OutputEncoding
+            try {
+                [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+                & $programa @resto | ForEach-Object {
+                    $_
+                    $texto = [string]$_
+                    if ($texto -match '"total_cost_usd"\s*:\s*([0-9.eE+-]+)') {
+                        $custo = [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+                    }
+                    if ($texto -match '"session_id"\s*:\s*"([^"]+)"') { $sessao = $Matches[1] }
+                }
+            } finally {
+                [Console]::OutputEncoding = $codificacao
+            }
+        } else {
+            & $programa @resto
+        }
+        $codigo = $LASTEXITCODE
     } finally {
         [Environment]::SetEnvironmentVariable($api.Variable, [NullString]::Value)
         if ($plano) {
@@ -1414,6 +1676,22 @@ function Invoke-PlanoApi {
             }
         }
         Restore-PlanoCredencialEnv -Guardadas $guardadas
+        if ($conta) {
+            # Gravado mesmo se a chamada for interrompida: sem custo medido, conta o teto.
+            Add-PlanoApiRegistro -Arquivo $api.LedgerFile -Dados ([ordered]@{
+                quando = $inicio.ToString('yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+                lado = $Side
+                projeto = $conta.Projeto
+                pasta = (Get-PlanoPastaAtual)
+                programa = (Split-Path -Leaf ([string]$programa))
+                modelo = (Get-PlanoArgValor -Lista $resto -Nome '--model')
+                teto = $conta.Teto
+                custo = $custo
+                saida = $codigo
+                duracao_s = [Math]::Round(((Get-Date) - $inicio).TotalSeconds, 1)
+                sessao = $sessao
+            })
+        }
     }
 }
 
@@ -1612,6 +1890,14 @@ function New-RoutingLines {
         $lines.Add('        VaultFile = ' + (ConvertTo-GeneratedPath -Path ([string]$api.vaultFile)))
         $lines.Add('        Runner = @(' + (($runner | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ')')
         $lines.Add('        PrintFlags = @(' + (($printFlags | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ')')
+        # Sem orcamento declarado, nada e' conferido nem registrado: comportamento anterior.
+        foreach ($par in @(@('BudgetFile', 'budgetFile'), @('LedgerFile', 'ledgerFile'))) {
+            if (Test-MapProperty -InputObject $api -Name $par[1]) {
+                $lines.Add('        ' + $par[0] + ' = ' + (ConvertTo-GeneratedPath -Path ([string]$api.($par[1]))))
+            } else {
+                $lines.Add('        ' + $par[0] + " = ''")
+            }
+        }
         foreach ($campo in @('Entry', 'Command')) {
             $lines.Add("        $campo = @{")
             foreach ($side in $apiSides) {
@@ -1714,6 +2000,14 @@ function New-RoutingLines {
         foreach ($apelido in @($nomes | Select-Object -Skip 1)) {
             $lines.Add("Set-Alias -Name $apelido -Value $canonico -Scope Global -Force")
         }
+    }
+
+    if ((Test-MapProperty -InputObject $Routing -Name 'apiKeys') -and
+        (Test-MapProperty -InputObject $Routing.apiKeys -Name 'budgetCommand')) {
+        $nome = [string]$Routing.apiKeys.budgetCommand
+        $lines.Add("function $nome {")
+        $lines.Add("    Show-PlanoApiSaldo -Cli '$Cli'")
+        $lines.Add('}')
     }
 
     return $lines
@@ -1933,6 +2227,9 @@ function Get-GeneratedCommandName {
             if (Test-MapProperty -InputObject $routing -Name 'apiKeys') {
                 foreach ($side in @($routing.apiKeys.sides.PSObject.Properties | ForEach-Object { $_.Name })) {
                     foreach ($nome in @($routing.apiKeys.sides.$side.commands)) { $nomes.Add([string]$nome) }
+                }
+                if (Test-MapProperty -InputObject $routing.apiKeys -Name 'budgetCommand') {
+                    $nomes.Add([string]$routing.apiKeys.budgetCommand)
                 }
             }
         }

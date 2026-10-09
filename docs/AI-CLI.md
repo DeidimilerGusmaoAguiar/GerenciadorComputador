@@ -297,6 +297,23 @@ o lado precisa existir em `commands`, a entrada do cofre é `namespace/chave`, e
 nome de comando não pode repetir. Com a CLI da rota, o comando exige uma das
 `printFlags`; o histórico continua no armazém comum.
 
+Com `budgetFile` e `ledgerFile` em `apiKeys`, o crédito passa a ter dono: o
+repositório que gera os perfis. O orçamento declara, por lado, o crédito do ciclo
+e o dia de renovação da assinatura, e reparte o crédito em alocações por projeto
+(pasta raiz, lado e teto). Antes de abrir o cofre, o comando de API confere:
+
+- a pasta corrente precisa estar dentro de uma alocação daquele lado — a raiz mais
+  específica vence; fora dela, a chamada é recusada;
+- com a CLI da rota, `--max-budget-usd` é obrigatório;
+- gasto do projeto no ciclo mais o teto da chamada não pode passar da alocação.
+
+Cada chamada vira uma linha no registro: lado, projeto, pasta, programa, modelo,
+teto, custo e sessão. Com `--output-format json` ou `stream-json` o custo é o
+medido pela CLI; sem isso, conta o teto. O registro é gravado mesmo se a chamada
+for interrompida, e várias sessões podem gravar ao mesmo tempo. `budgetCommand`
+gera o comando que mostra, por lado, ciclo, alocado, gasto e o que resta de cada
+projeto. Recusa nunca abre o cofre, então nunca pede senha à toa.
+
 A chave não passa pelo `cmd.exe`: é lida para uma variável local e o programa é
 chamado direto, então prompt com `&`, `|`, `%` ou `^` chega intacto. No Windows
 PowerShell 5.1, programa nativo ainda perde aspas duplas internas dos argumentos —
