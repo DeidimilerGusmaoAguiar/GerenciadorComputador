@@ -229,7 +229,11 @@ Três consequências merecem estar na frente de quem decide isso:
   sobrescrita. Arquivo de mesmo nome e conteúdo diferente não é descartado nem
   colado ao lado do original — `file-history` e `projects` são namespaces lidos
   por padrão de nome, e um sufixo colado ali produz arquivo que ninguém abre.
-  Ele sai inteiro para `.conflitos\<plano>\`, preservando o caminho relativo.
+  Ele sai inteiro para `.conflitos\<pasta>\<plano>\`, preservando o caminho
+  relativo. A mescla desce nas subpastas que existem dos dois lados: uma sessão
+  aberta durante o religamento grava na mesma subpasta nas duas pontas, e mover
+  só o que faltava no destino deixava essa subpasta para trás — o vínculo nunca
+  era refeito e a pasta crescia até passar do limite.
   Mescla grande demais para a abertura de um terminal é recusada com o nome do
   script que faz o trabalho completo: travar a subida da CLI seria pior que o
   problema que isso resolve.

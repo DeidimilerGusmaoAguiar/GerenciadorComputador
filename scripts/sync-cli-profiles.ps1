@@ -377,8 +377,10 @@ function Test-ProfileMap {
             ) {
                 throw "routing.$cliName.sharedState sem 'root'."
             }
-            $sharedFolders = if (Test-MapProperty -InputObject $shared -Name 'folders') { @($shared.folders) } else { @() }
-            $sharedFiles = if (Test-MapProperty -InputObject $shared -Name 'files') { @($shared.files) } else { @() }
+            # @() por fora do if: lista de um item so seria desmontada e o .Count
+            # abaixo falharia no StrictMode com uma unica pasta compartilhada.
+            $sharedFolders = @(if (Test-MapProperty -InputObject $shared -Name 'folders') { $shared.folders })
+            $sharedFiles = @(if (Test-MapProperty -InputObject $shared -Name 'files') { $shared.files })
             if ($sharedFolders.Count -eq 0 -and $sharedFiles.Count -eq 0) {
                 throw "routing.$cliName.sharedState sem nada em 'folders' nem 'files'."
             }
@@ -1018,6 +1020,58 @@ function Write-PlanoCabecalho {
     Write-Host ''
 }
 
+function Merge-PlanoPasta {
+    <#
+    .SYNOPSIS
+    Move o conteudo de uma pasta solta para o store, descendo nas subpastas que
+    existem dos dois lados. Devolve $true quando a origem ficou vazia.
+
+    .DESCRIPTION
+    Sessao aberta durante o religamento grava na mesma subpasta dos dois lados.
+    Mover so o que nao existia no destino deixava essa subpasta para tras, e o
+    vinculo nunca era refeito: a pasta crescia ate passar do limite. Arquivo
+    igual dos dois lados sai da origem; arquivo diferente vai para Conflitos,
+    com o caminho relativo preservado. Nada e' sobrescrito.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Origem,
+        [Parameter(Mandatory)][string]$Destino,
+        [Parameter(Mandatory)][string]$Conflitos
+    )
+    $ok = $true
+    foreach ($filho in @(Get-ChildItem -LiteralPath $Origem -Force -ErrorAction SilentlyContinue)) {
+        $para = Join-Path $Destino $filho.Name
+        $existente = Get-Item -LiteralPath $para -Force -ErrorAction SilentlyContinue
+        $ehLink = [bool]($filho.Attributes -band [IO.FileAttributes]::ReparsePoint)
+        try {
+            if (-not $existente) {
+                Move-Item -LiteralPath $filho.FullName -Destination $para -ErrorAction Stop
+            } elseif ($filho.PSIsContainer -and $existente.PSIsContainer -and -not $ehLink) {
+                if (Merge-PlanoPasta -Origem $filho.FullName -Destino $para -Conflitos (Join-Path $Conflitos $filho.Name)) {
+                    [IO.Directory]::Delete($filho.FullName, $false)
+                } else {
+                    $ok = $false
+                }
+            } elseif (-not $filho.PSIsContainer -and -not $existente.PSIsContainer) {
+                if ((Get-FileHash -LiteralPath $filho.FullName).Hash -eq (Get-FileHash -LiteralPath $para).Hash) {
+                    Remove-Item -LiteralPath $filho.FullName -Force -ErrorAction Stop
+                } else {
+                    $null = New-Item -ItemType Directory -Path $Conflitos -Force
+                    $guarda = Join-Path $Conflitos $filho.Name
+                    if (Test-Path -LiteralPath $guarda) { $guarda = $guarda + '.' + (Get-Date -Format 'yyyyMMddHHmmss') }
+                    Move-Item -LiteralPath $filho.FullName -Destination $guarda -ErrorAction Stop
+                }
+            } else {
+                # Pasta de um lado e arquivo do outro, ou link: decidir e' do script completo.
+                $ok = $false
+            }
+        } catch {
+            $ok = $false
+        }
+    }
+    return $ok
+}
+
 function Assert-PlanoCompartilhado {
     <#
     .SYNOPSIS
@@ -1079,13 +1133,15 @@ function Assert-PlanoCompartilhado {
                 ) -ForegroundColor Red
                 continue
             }
-            $sobrou = $false
-            foreach ($filho in @(Get-ChildItem -LiteralPath $link -Force -ErrorAction SilentlyContinue)) {
-                $para = Join-Path $alvo $filho.Name
-                if (Test-Path -LiteralPath $para) { $sobrou = $true; continue }
-                try { Move-Item -LiteralPath $filho.FullName -Destination $para -ErrorAction Stop }
-                catch { $sobrou = $true }
+            # Mesmo formato do unify-plan-sessions.ps1: .conflitos\<pasta>\<plano>\...
+            $rotulo = Split-Path -Leaf $Estado
+            foreach ($chave in @($rota.Dir.Keys)) {
+                if ([IO.Path]::GetFullPath($rota.Dir[$chave]).TrimEnd('\') -eq [IO.Path]::GetFullPath($Estado).TrimEnd('\')) {
+                    $rotulo = $chave.Replace('|', '-')
+                }
             }
+            $conflitos = Join-Path (Join-Path (Join-Path $rota.SharedRoot '.conflitos') $nome) $rotulo
+            $sobrou = -not (Merge-PlanoPasta -Origem $link -Destino $alvo -Conflitos $conflitos)
             if ($sobrou) {
                 Write-Host (
                     '    atencao: ' + $nome + ' tem itens que nao puderam ser unidos. ' +
