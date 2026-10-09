@@ -398,6 +398,70 @@ function Test-ProfileMap {
             }
         }
 
+        # Variavel de credencial no ambiente passa na frente do login do plano:
+        # a sessao interativa sobe cobrando a API e cai quando o saldo nao cobre.
+        # Declarada aqui, ela e' retirada de toda sessao do roteador.
+        $credentialEnv = @()
+        if (Test-MapProperty -InputObject $routing -Name 'credentialEnv') {
+            $credentialEnv = @($routing.credentialEnv | ForEach-Object { [string]$_ })
+            foreach ($nome in $credentialEnv) {
+                if ($nome -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+                    throw "routing.$cliName.credentialEnv com nome de variavel invalido: $nome"
+                }
+            }
+        }
+
+        if (Test-MapProperty -InputObject $routing -Name 'apiKeys') {
+            $api = $routing.apiKeys
+            foreach ($required in @('variable', 'vaultScript', 'vaultFile', 'sides')) {
+                if (-not (Test-MapProperty -InputObject $api -Name $required)) {
+                    throw "routing.$cliName.apiKeys sem o campo obrigatorio '$required'."
+                }
+            }
+            if ([string]$api.variable -notin $credentialEnv) {
+                throw (
+                    "routing.$cliName.apiKeys.variable '$($api.variable)' precisa estar em credentialEnv: " +
+                    'sem isso uma chave esquecida no ambiente derrubaria as sessoes do plano.'
+                )
+            }
+            if (Test-MapProperty -InputObject $api -Name 'runner') {
+                if (@($api.runner | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -eq 0) {
+                    throw "routing.$cliName.apiKeys.runner vazio."
+                }
+            }
+            $apiSides = @($api.sides.PSObject.Properties | ForEach-Object { $_.Name })
+            if ($apiSides.Count -eq 0) {
+                throw "routing.$cliName.apiKeys sem nenhum lado em 'sides'."
+            }
+            foreach ($side in $apiSides) {
+                if ($side -notin $sides) {
+                    throw "routing.$cliName.apiKeys.sides.$side nao e um lado de 'commands'."
+                }
+                $item = $api.sides.$side
+                if (
+                    -not (Test-MapProperty -InputObject $item -Name 'entry') -or
+                    [string]$item.entry -notmatch '^[^/\s]+/\S+$'
+                ) {
+                    throw "routing.$cliName.apiKeys.sides.$side.entry deve ser 'namespace/chave' do cofre."
+                }
+                # @() por fora: atribuir o resultado de um if desmonta lista de
+                # um item so, e o .Count falharia no StrictMode.
+                $apiCommands = @()
+                if (Test-MapProperty -InputObject $item -Name 'commands') { $apiCommands = @($item.commands) }
+                if ($apiCommands.Count -eq 0) {
+                    throw "routing.$cliName.apiKeys.sides.$side sem 'commands'."
+                }
+                foreach ($command in $apiCommands) {
+                    if ([string]$command -notmatch '^[A-Za-z][\w\-]*$') {
+                        throw "Comando invalido para funcao do PowerShell: $command"
+                    }
+                    if (-not $seen.Add([string]$command)) {
+                        throw "Comando repetido no mapa: $command"
+                    }
+                }
+            }
+        }
+
         # Rota para pasta inexistente nao e erro - repositorio pode nao estar
         # clonado nesta maquina - mas o silencio esconde erro de digitacao.
         if (Test-MapProperty -InputObject $routing -Name 'routes') {
@@ -1082,20 +1146,49 @@ function Assert-PlanoCompartilhado {
     }
 }
 
-function Invoke-PlanoCli {
+function Save-PlanoCredencialEnv {
+    <#
+    .SYNOPSIS
+    Retira do processo as variaveis de credencial da rota e devolve o que havia.
+
+    .DESCRIPTION
+    Chave de API no ambiente passa na frente do login do plano. Numa sessao
+    interativa isso troca a conta em silencio, e se a organizacao so tiver o
+    credito incluso no plano a sessao cai por falta de saldo. O valor e'
+    guardado so para ser devolvido depois; nunca e' impresso.
+    #>
+    param([Parameter(Mandatory)][string]$Cli)
+    $guardadas = @{}
+    foreach ($nome in @($script:PlanoRota[$Cli].CredentialEnv)) {
+        if (Test-Path ('Env:\' + $nome)) {
+            $guardadas[$nome] = [Environment]::GetEnvironmentVariable($nome)
+            [Environment]::SetEnvironmentVariable($nome, [NullString]::Value)
+        }
+    }
+    return $guardadas
+}
+
+function Restore-PlanoCredencialEnv {
+    param([Parameter(Mandatory)][hashtable]$Guardadas)
+    foreach ($nome in @($Guardadas.Keys)) {
+        [Environment]::SetEnvironmentVariable($nome, $Guardadas[$nome])
+    }
+}
+
+function Get-PlanoArgumentoLimpo {
+    <#
+    .SYNOPSIS
+    Injeta as flags obrigatorias uma vez so e descarta as que vieram digitadas.
+
+    .DESCRIPTION
+    Digitada a mao - inclusive errada, no singular - a CLI recusava a flag com
+    "unknown option" e a sessao morria antes de comecar.
+    #>
     param(
         [Parameter(Mandatory)][string]$Cli,
-        [Parameter(Mandatory)][string]$Side,
-        [Parameter(ValueFromRemainingArguments)][object[]]$Rest
+        [AllowEmptyCollection()][object[]]$Rest = @()
     )
-
     $rota = $script:PlanoRota[$Cli]
-    $pasta = Get-PlanoPastaAtual
-    $plano = Resolve-PlanoEstado -Cli $Cli -Path $pasta -Side $Side
-
-    # A flag obrigatoria e injetada aqui, uma vez so. Digitada a mao - inclusive
-    # errada, no singular - a CLI recusava com "unknown option" e a sessao morria
-    # antes de comecar. Qualquer variante vinda dos argumentos e descartada.
     $limpos = @()
     $corrigiu = $false
     foreach ($argumento in @($Rest)) {
@@ -1109,16 +1202,42 @@ function Invoke-PlanoCli {
         }
         if (-not $descartar) { $limpos += $argumento }
     }
+    return [pscustomobject]@{
+        Argumentos = @(@($rota.Flags) + @($limpos))
+        Corrigiu = $corrigiu
+    }
+}
+
+function Invoke-PlanoCli {
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Side,
+        [Parameter(ValueFromRemainingArguments)][object[]]$Rest
+    )
+
+    $rota = $script:PlanoRota[$Cli]
+    $pasta = Get-PlanoPastaAtual
+    $plano = Resolve-PlanoEstado -Cli $Cli -Path $pasta -Side $Side
+    $limpo = Get-PlanoArgumentoLimpo -Cli $Cli -Rest @($Rest)
 
     Write-PlanoCabecalho -Plano $plano -Pasta $pasta
-    if ($corrigiu) {
+    if ($limpo.Corrigiu) {
         Write-Host '  (flag corrigida para a forma aceita pela CLI)' -ForegroundColor DarkGray
     }
 
-    $argumentos = @($rota.Flags) + @($limpos)
+    $argumentos = $limpo.Argumentos
     $had = Test-Path ('Env:\' + $rota.Variable)
     $anterior = [Environment]::GetEnvironmentVariable($rota.Variable)
+    $guardadas = Save-PlanoCredencialEnv -Cli $Cli
     try {
+        if ($guardadas.Count -gt 0) {
+            Write-Host ('  ' + (@($guardadas.Keys) -join ', ') +
+                ' fora desta sessao: passaria na frente do plano e a sessao cobraria a API.') -ForegroundColor Yellow
+            if ($rota.ApiKey) {
+                Write-Host ('  Para usar a API de proposito: ' + (@($rota.ApiKey.Command.Values) -join ' ou ') +
+                    ' ' + $rota.Command + ' -p "..."') -ForegroundColor DarkGray
+            }
+        }
         [Environment]::SetEnvironmentVariable($rota.Variable, $plano.Home)
         & (Resolve-CliExecutable -Command $rota.Command) @argumentos
     } finally {
@@ -1130,6 +1249,115 @@ function Invoke-PlanoCli {
         } else {
             [Environment]::SetEnvironmentVariable($rota.Variable, [NullString]::Value)
         }
+        Restore-PlanoCredencialEnv -Guardadas $guardadas
+    }
+}
+
+function Invoke-PlanoApi {
+    <#
+    .SYNOPSIS
+    Roda um comando com a chave de API do lado, so no processo filho.
+
+    .DESCRIPTION
+    A chave sai do cofre para uma variavel local, entra no ambiente so durante
+    a chamada e e' removida no fim, com qualquer valor anterior devolvido. Nunca
+    e' impressa. A CLI da rota so roda em modo nao interativo: a sessao
+    interativa nao e' coberta pelo credito de API e cairia por falta de saldo.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        [Parameter(Mandatory)][string]$Side,
+        [Parameter(ValueFromRemainingArguments)][object[]]$Rest
+    )
+
+    $rota = $script:PlanoRota[$Cli]
+    $api = $rota.ApiKey
+    $nome = $api.Command[$Side]
+    $itens = @($Rest)
+    if ($itens.Count -eq 0) {
+        Write-Host ''
+        Write-Host ('  Uso: ' + $nome + ' <comando> [argumentos]')
+        Write-Host ('  ex.: ' + $nome + ' ' + $rota.Command + ' ' + ($api.PrintFlags | Select-Object -First 1) + ' "resuma o README"')
+        Write-Host ('       ' + $nome + ' py -3 meu_agente.py')
+        Write-Host ('  A chave vem do cofre (' + $api.Entry[$Side] + ') e existe so no processo filho.') -ForegroundColor DarkGray
+        Write-Host ('  Cobra a organizacao de API vinculada ao plano ' + $Side + ', nunca o limite do plano.') -ForegroundColor DarkGray
+        Write-Host ''
+        return
+    }
+
+    $programa = [string]$itens[0]
+    $resto = @($itens | Select-Object -Skip 1)
+    $plano = $null
+    if ($programa -eq $rota.Command) {
+        $temPrint = $false
+        foreach ($argumento in $resto) {
+            if (($argumento -is [string]) -and ($api.PrintFlags -contains $argumento)) { $temPrint = $true }
+        }
+        if ((@($api.PrintFlags).Count -gt 0) -and -not $temPrint) {
+            Write-Host ('  Recusado: ' + $nome + ' ' + $programa + ' sem ' + ($api.PrintFlags -join ' ou ') + '.') -ForegroundColor Red
+            Write-Host '  Sessao interativa nao e coberta pelo credito de API e cairia por falta de saldo.' -ForegroundColor DarkGray
+            Write-Host ('  Para conversar, use o comando do plano: ' + $rota.Command + '.') -ForegroundColor DarkGray
+            return
+        }
+        $plano = Resolve-PlanoEstado -Cli $Cli -Path (Get-PlanoPastaAtual) -Side $Side
+        $resto = (Get-PlanoArgumentoLimpo -Cli $Cli -Rest $resto).Argumentos
+        $programa = Resolve-CliExecutable -Command $rota.Command
+    }
+
+    if (-not (Test-Path -LiteralPath $api.VaultScript)) {
+        Write-Host ('  Cofre indisponivel: script nao encontrado em ' + $api.VaultScript) -ForegroundColor Red
+        return
+    }
+    if (-not (Test-Path -LiteralPath $api.VaultFile)) {
+        Write-Host ('  Cofre indisponivel: arquivo nao encontrado em ' + $api.VaultFile) -ForegroundColor Red
+        return
+    }
+    $runner = @($api.Runner)
+    $argsCofre = @($runner | Select-Object -Skip 1) + @($api.VaultScript, '--vault', $api.VaultFile, 'get', $api.Entry[$Side], '--show')
+    # Escopo proprio com Continue: no Windows PowerShell 5.1, sob Stop, o stderr
+    # do cofre vira excecao mesmo com 2>$null e a mensagem abaixo nunca sairia.
+    $valor = (& {
+        $ErrorActionPreference = 'Continue'
+        & $runner[0] @argsCofre 2>$null
+    } | Out-String).Trim()
+    if (($LASTEXITCODE -ne 0) -or [string]::IsNullOrEmpty($valor)) {
+        $valor = $null
+        Write-Host ('  Sem chave no cofre: ' + $api.Entry[$Side] + ' em ' + (Split-Path -Leaf $api.VaultFile) + '.') -ForegroundColor Red
+        Write-Host '  Crie a chave na organizacao de API vinculada a este plano e guarde com:' -ForegroundColor DarkGray
+        Write-Host ('    ' + ($runner -join ' ') + ' ' + $api.VaultScript + ' --vault ' + $api.VaultFile + ' set ' + $api.Entry[$Side]) -ForegroundColor DarkGray
+        return
+    }
+
+    $cor = 'Gray'
+    if ($plano) { $cor = $plano.Color } elseif ($rota.Color.ContainsKey($Side + '|blindado')) { $cor = $rota.Color[$Side + '|blindado'] }
+    Write-Host ''
+    Write-Host ('  API ' + $Side + ': cobra a organizacao vinculada ao plano ' + $Side + ', nao o limite do plano') -ForegroundColor $cor
+    Write-Host ('    chave : cofre ' + (Split-Path -Leaf $api.VaultFile) + ' / ' + $api.Entry[$Side] + ' (so no processo filho)') -ForegroundColor DarkGray
+    if ($plano) {
+        Write-Host ('    estado: ' + $plano.Home) -ForegroundColor DarkGray
+        # O historico continua comum: a transcricao do -p cai no mesmo armazem.
+        Assert-PlanoCompartilhado -Cli $Cli -Estado $plano.Home
+    }
+    Write-Host ''
+
+    $had = Test-Path ('Env:\' + $rota.Variable)
+    $anterior = [Environment]::GetEnvironmentVariable($rota.Variable)
+    $guardadas = Save-PlanoCredencialEnv -Cli $Cli
+    try {
+        if ($plano) { [Environment]::SetEnvironmentVariable($rota.Variable, $plano.Home) }
+        [Environment]::SetEnvironmentVariable($api.Variable, $valor)
+        $valor = $null
+        & $programa @resto
+    } finally {
+        [Environment]::SetEnvironmentVariable($api.Variable, [NullString]::Value)
+        if ($plano) {
+            if ($had) {
+                [Environment]::SetEnvironmentVariable($rota.Variable, $anterior)
+            } else {
+                [Environment]::SetEnvironmentVariable($rota.Variable, [NullString]::Value)
+            }
+        }
+        Restore-PlanoCredencialEnv -Guardadas $guardadas
     }
 }
 
@@ -1166,6 +1394,30 @@ function Show-PlanoStatus {
         Write-Host ('  Historico  : ' + $rota.SharedRoot + '   (comum aos planos)')
         if ($soltos.Count -gt 0) {
             Write-Host ('               solto: ' + ($soltos -join ', ')) -ForegroundColor Red
+        }
+    }
+    if (@($rota.CredentialEnv).Count -gt 0) {
+        # So o nome e onde esta. O valor nunca e' lido para a tela.
+        $achadas = @()
+        foreach ($nome in @($rota.CredentialEnv)) {
+            foreach ($alvo in @('Process', 'User', 'Machine')) {
+                if (-not [string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($nome, $alvo))) {
+                    $achadas += ($nome + ' (' + $alvo + ')')
+                }
+            }
+        }
+        if ($achadas.Count -eq 0) {
+            Write-Host '  Chave API  : nenhuma no ambiente'
+        } else {
+            Write-Host ('  Chave API  : ' + ($achadas -join ', ')) -ForegroundColor Red
+            Write-Host ('               o roteador retira das sessoes de plano; deixar no ambiente e risco') -ForegroundColor Red
+        }
+    }
+    if ($rota.ApiKey) {
+        foreach ($lado in $rota.Sides) {
+            if (-not $rota.ApiKey.Entry.ContainsKey($lado)) { continue }
+            Write-Host ('  API ' + $lado + (' ' * [Math]::Max(0, 7 - $lado.Length)) + ': ' + $rota.ApiKey.Command[$lado] +
+                ' -> cofre ' + (Split-Path -Leaf $rota.ApiKey.VaultFile) + ' / ' + $rota.ApiKey.Entry[$lado]) -ForegroundColor DarkGray
         }
     }
     Write-Host ''
@@ -1288,6 +1540,35 @@ function New-RoutingLines {
     }
     $lines.Add('    }')
 
+    # Sem as secoes no mapa, nada e' retirado do ambiente e nao ha comando de
+    # API: o perfil se comporta como antes.
+    $credentialEnv = if (Test-MapProperty -InputObject $Routing -Name 'credentialEnv') { @($Routing.credentialEnv) } else { @() }
+    $lines.Add("    CredentialEnv = @(" + (($credentialEnv | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ")")
+    $apiSides = @()
+    if (Test-MapProperty -InputObject $Routing -Name 'apiKeys') {
+        $api = $Routing.apiKeys
+        $apiSides = @($api.sides.PSObject.Properties | ForEach-Object { $_.Name })
+        $runner = if (Test-MapProperty -InputObject $api -Name 'runner') { @($api.runner) } else { @('py', '-3') }
+        $printFlags = if (Test-MapProperty -InputObject $api -Name 'printFlags') { @($api.printFlags) } else { @() }
+        $lines.Add('    ApiKey = @{')
+        $lines.Add("        Variable = '" + ([string]$api.variable).Replace("'", "''") + "'")
+        $lines.Add('        VaultScript = ' + (ConvertTo-GeneratedPath -Path ([string]$api.vaultScript)))
+        $lines.Add('        VaultFile = ' + (ConvertTo-GeneratedPath -Path ([string]$api.vaultFile)))
+        $lines.Add('        Runner = @(' + (($runner | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ')')
+        $lines.Add('        PrintFlags = @(' + (($printFlags | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ')')
+        foreach ($campo in @('Entry', 'Command')) {
+            $lines.Add("        $campo = @{")
+            foreach ($side in $apiSides) {
+                $valor = if ($campo -eq 'Entry') { [string]$api.sides.$side.entry } else { [string]@($api.sides.$side.commands)[0] }
+                $lines.Add("            '$side' = '" + $valor.Replace("'", "''") + "'")
+            }
+            $lines.Add('        }')
+        }
+        $lines.Add('    }')
+    } else {
+        $lines.Add('    ApiKey = $null')
+    }
+
     $routes = if (Test-MapProperty -InputObject $Routing -Name 'routes') { @($Routing.routes) } else { @() }
     if (@($routes).Count -eq 0) {
         $lines.Add('    Routes = @()')
@@ -1364,6 +1645,18 @@ function New-RoutingLines {
             foreach ($apelido in @($Routing.askAliases)) {
                 $lines.Add("Set-Alias -Name $apelido -Value $nome -Scope Global -Force")
             }
+        }
+    }
+
+    foreach ($side in $apiSides) {
+        $nomes = @($Routing.apiKeys.sides.$side.commands)
+        $canonico = [string]$nomes[0]
+        $lines.Add("function $canonico {")
+        $lines.Add('    # Sem param(), pelo mesmo motivo dos comandos de plano.')
+        $lines.Add("    Invoke-PlanoApi -Cli '$Cli' -Side '$side' -Rest `$args")
+        $lines.Add('}')
+        foreach ($apelido in @($nomes | Select-Object -Skip 1)) {
+            $lines.Add("Set-Alias -Name $apelido -Value $canonico -Scope Global -Force")
         }
     }
 
@@ -1580,6 +1873,11 @@ function Get-GeneratedCommandName {
             foreach ($campo in @('statusAliases', 'askAliases')) {
                 if (-not (Test-MapProperty -InputObject $routing -Name $campo)) { continue }
                 foreach ($nome in @($routing.$campo)) { $nomes.Add([string]$nome) }
+            }
+            if (Test-MapProperty -InputObject $routing -Name 'apiKeys') {
+                foreach ($side in @($routing.apiKeys.sides.PSObject.Properties | ForEach-Object { $_.Name })) {
+                    foreach ($nome in @($routing.apiKeys.sides.$side.commands)) { $nomes.Add([string]$nome) }
+                }
             }
         }
     }

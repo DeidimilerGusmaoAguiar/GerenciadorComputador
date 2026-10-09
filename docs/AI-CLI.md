@@ -260,6 +260,45 @@ diretórios por convenção de nome ao montar um inventário.
 O mapa de uma máquina específica é dado local: mantenha-o em `local\`, nunca
 versionado.
 
+### Chave de API sem trocar a conta do plano
+
+Alguns planos de assinatura incluem crédito mensal de API, numa organização do
+console vinculada ao plano. Esse crédito paga a API, o Agent SDK e o
+`claude -p` rodado com chave daquela organização — e **não** paga a sessão
+interativa. Isso cria uma armadilha: a chave de API no ambiente passa na frente
+do login do plano. Esquecida numa variável de usuário ou num perfil, ela faz toda
+sessão subir cobrando a API, e se a organização só tiver o crédito incluso, a
+sessão cai por falta de saldo.
+
+Duas seções do mapa, ambas opcionais, separam os dois usos:
+
+- **`credentialEnv`** — variáveis de credencial (`ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`). Todo comando de plano as retira do processo antes de
+  abrir a CLI e as devolve na saída, com aviso. O diagnóstico aponta onde elas
+  estão definidas — processo, usuário ou máquina — sem nunca ler o valor.
+- **`apiKeys`** — um comando por lado (`ApiPessoal`, `ApiDev`...) que roda
+  **outro comando** com a chave daquele lado. A chave sai de um cofre local
+  (`vaultScript`, `vaultFile`, `entry` por lado), existe só durante a chamada e é
+  removida no fim, com qualquer valor anterior devolvido. Não é impressa.
+
+```powershell
+ApiDev claude -p "resuma o README"     # usa o estado do lado, cobra a organizacao
+ApiDev py -3 meu_agente.py             # qualquer programa recebe a chave
+ApiDev claude                          # recusado: sessao interativa nao e coberta
+```
+
+Regras que o gerador impõe: a variável de `apiKeys` precisa estar em
+`credentialEnv` — sem isso uma chave esquecida voltaria a derrubar as sessões —,
+o lado precisa existir em `commands`, a entrada do cofre é `namespace/chave`, e
+nome de comando não pode repetir. Com a CLI da rota, o comando exige uma das
+`printFlags`; o histórico continua no armazém comum.
+
+A chave não passa pelo `cmd.exe`: é lida para uma variável local e o programa é
+chamado direto, então prompt com `&`, `|`, `%` ou `^` chega intacto. No Windows
+PowerShell 5.1, programa nativo ainda perde aspas duplas internas dos argumentos —
+limitação do 5.1, que vale também para os comandos de plano; o PowerShell 7 não
+tem esse defeito.
+
 ### Mantendo os hosts sincronizados
 
 Windows PowerShell 5.1 e PowerShell 7 leem arquivos de perfil diferentes
