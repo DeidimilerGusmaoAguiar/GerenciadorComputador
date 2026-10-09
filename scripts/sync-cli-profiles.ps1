@@ -1382,13 +1382,31 @@ function Get-PlanoApiCiclo {
 }
 
 function Find-PlanoApiAlocacao {
-    # Alocacao da pasta corrente naquele lado; a raiz mais especifica vence.
+    <#
+    .SYNOPSIS
+    Alocacao da pasta corrente naquele lado; a raiz mais especifica vence.
+
+    .DESCRIPTION
+    Uma alocacao pode ter mais de uma raiz ("raiz" e/ou "raizes"): todas dividem
+    o mesmo teto e o mesmo gasto. Serve para trabalho que o projeto roda de
+    proposito fora da propria pasta - pesquisa em pasta neutra, por exemplo.
+    #>
     param([Parameter(Mandatory)]$Orcamento, [Parameter(Mandatory)][string]$Side, [Parameter(Mandatory)][string]$Pasta)
     $melhor = $null
+    $melhorTamanho = -1
     foreach ($a in @($Orcamento.alocacoes)) {
         if ([string]$a.lado -ne $Side) { continue }
-        if (-not (Test-PlanoDentroDe -Path $Pasta -Root ([string]$a.raiz))) { continue }
-        if ((-not $melhor) -or (([string]$a.raiz).Length -gt ([string]$melhor.raiz).Length)) { $melhor = $a }
+        $raizes = @()
+        if ($a.PSObject.Properties.Name -contains 'raiz') { $raizes += [string]$a.raiz }
+        if ($a.PSObject.Properties.Name -contains 'raizes') { $raizes += @($a.raizes | ForEach-Object { [string]$_ }) }
+        foreach ($r in $raizes) {
+            if ([string]::IsNullOrWhiteSpace($r)) { continue }
+            if (-not (Test-PlanoDentroDe -Path $Pasta -Root $r)) { continue }
+            if ($r.Length -gt $melhorTamanho) {
+                $melhor = $a
+                $melhorTamanho = $r.Length
+            }
+        }
     }
     return $melhor
 }
@@ -1641,31 +1659,52 @@ function Invoke-PlanoApi {
     $custo = $null
     $sessao = $null
     $codigo = $null
+    $falhaInicio = $null
     try {
         if ($plano) { [Environment]::SetEnvironmentVariable($rota.Variable, $plano.Home) }
         [Environment]::SetEnvironmentVariable($api.Variable, $valor)
         $valor = $null
-        if ($conta -and $conta.Captura) {
-            # Saida JSON so chega no fim: ler a linha no caminho nao atrasa nada.
-            # UTF-8 durante a chamada para acento nao virar lixo no console.
-            $codificacao = [Console]::OutputEncoding
+        # "Nao reconhecido" para um caminho que existe ja aconteceu uma vez, sem
+        # repetir: a pasta do node e' um link que o gerenciador de versoes troca.
+        # Uma segunda tentativa cobre isso; se falhar de novo, sai o diagnostico.
+        for ($tentativa = 1; $tentativa -le 2; $tentativa++) {
             try {
-                [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
-                & $programa @resto | ForEach-Object {
-                    $_
-                    $texto = [string]$_
-                    if ($texto -match '"total_cost_usd"\s*:\s*([0-9.eE+-]+)') {
-                        $custo = [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+                if ($conta -and $conta.Captura) {
+                    # Saida JSON so chega no fim: ler a linha no caminho nao atrasa nada.
+                    # UTF-8 durante a chamada para acento nao virar lixo no console.
+                    $codificacao = [Console]::OutputEncoding
+                    try {
+                        [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+                        & $programa @resto | ForEach-Object {
+                            $_
+                            $texto = [string]$_
+                            if ($texto -match '"total_cost_usd"\s*:\s*([0-9.eE+-]+)') {
+                                $custo = [double]::Parse($Matches[1], [Globalization.CultureInfo]::InvariantCulture)
+                            }
+                            if ($texto -match '"session_id"\s*:\s*"([^"]+)"') { $sessao = $Matches[1] }
+                        }
+                    } finally {
+                        [Console]::OutputEncoding = $codificacao
                     }
-                    if ($texto -match '"session_id"\s*:\s*"([^"]+)"') { $sessao = $Matches[1] }
+                } else {
+                    & $programa @resto
                 }
-            } finally {
-                [Console]::OutputEncoding = $codificacao
+                $falhaInicio = $null
+                break
+            } catch [System.Management.Automation.CommandNotFoundException] {
+                $falhaInicio = $_.Exception.Message
+                if ($tentativa -lt 2) { Start-Sleep -Milliseconds 800 }
             }
-        } else {
-            & $programa @resto
         }
-        $codigo = $LASTEXITCODE
+        if ($falhaInicio) {
+            Write-Host ('  Nao consegui iniciar o programa (2 tentativas): ' + $falhaInicio) -ForegroundColor Red
+            Write-Host ('    caminho: [' + [string]$programa + '] tamanho ' + ([string]$programa).Length +
+                ' | existe: ' + (Test-Path -LiteralPath ([string]$programa)) +
+                ' | pasta: ' + (Get-PlanoPastaAtual) + ' | PowerShell ' + $PSVersionTable.PSVersion) -ForegroundColor DarkGray
+            Write-Host '    Nada foi cobrado: o registro anota custo 0.' -ForegroundColor DarkGray
+        } else {
+            $codigo = $LASTEXITCODE
+        }
     } finally {
         [Environment]::SetEnvironmentVariable($api.Variable, [NullString]::Value)
         if ($plano) {
@@ -1677,7 +1716,9 @@ function Invoke-PlanoApi {
         }
         Restore-PlanoCredencialEnv -Guardadas $guardadas
         if ($conta) {
-            # Gravado mesmo se a chamada for interrompida: sem custo medido, conta o teto.
+            # Gravado mesmo se a chamada for interrompida: sem custo medido, conta o
+            # teto. Programa que nem iniciou nao gastou nada: custo 0, com o motivo.
+            if ($falhaInicio) { $custo = 0.0 }
             Add-PlanoApiRegistro -Arquivo $api.LedgerFile -Dados ([ordered]@{
                 quando = $inicio.ToString('yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
                 lado = $Side
@@ -1690,6 +1731,7 @@ function Invoke-PlanoApi {
                 saida = $codigo
                 duracao_s = [Math]::Round(((Get-Date) - $inicio).TotalSeconds, 1)
                 sessao = $sessao
+                nota = $(if ($falhaInicio) { 'nao iniciou: ' + $falhaInicio } else { $null })
             })
         }
     }

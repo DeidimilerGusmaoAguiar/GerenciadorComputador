@@ -303,14 +303,19 @@ e o dia de renovação da assinatura, e reparte o crédito em alocações por pr
 (pasta raiz, lado e teto). Antes de abrir o cofre, o comando de API confere:
 
 - a pasta corrente precisa estar dentro de uma alocação daquele lado — a raiz mais
-  específica vence; fora dela, a chamada é recusada;
+  específica vence; fora dela, a chamada é recusada. Uma alocação pode ter mais de
+  uma raiz (`raiz` e `raizes`), dividindo o mesmo teto: serve ao trabalho que o
+  projeto roda de propósito fora da própria pasta, como pesquisa numa pasta
+  neutra que não carrega as instruções do projeto;
 - com a CLI da rota, `--max-budget-usd` é obrigatório;
 - gasto do projeto no ciclo mais o teto da chamada não pode passar da alocação.
 
 Cada chamada vira uma linha no registro: lado, projeto, pasta, programa, modelo,
 teto, custo e sessão. Com `--output-format json` ou `stream-json` o custo é o
 medido pela CLI; sem isso, conta o teto. O registro é gravado mesmo se a chamada
-for interrompida, e várias sessões podem gravar ao mesmo tempo. `budgetCommand`
+for interrompida, e várias sessões podem gravar ao mesmo tempo. Programa que nem
+chegou a iniciar — "não reconhecido", mesmo depois de uma segunda tentativa —
+entra com custo zero e o motivo, e o diagnóstico sai na tela. `budgetCommand`
 gera o comando que mostra, por lado, ciclo, alocado, gasto e o que resta de cada
 projeto. Recusa nunca abre o cofre, então nunca pede senha à toa.
 
