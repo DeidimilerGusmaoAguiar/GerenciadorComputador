@@ -187,11 +187,65 @@ Duas defesas valem a pena junto com isso:
   Definir a variável de estado como variável de usuário permanente, apontando
   para o perfil blindado, faz o piso ser o mais restrito em vez do mais aberto.
 
+### Um histórico só, para todos os lados
+
+A conta é propriedade do lado. O histórico não é. Uma sessão aberta no lado de
+trabalho descreve o mesmo repositório que o lado pessoal vai abrir amanhã, e a
+memória do projeto mora dentro do diretório de sessões — `projects\<pasta>\memory`.
+Com um diretório de estado por plano, cada plano enxerga só o que ele próprio
+gravou: o `-r` de um lado não lista a sessão do outro, e a memória aprendida num
+plano não existe no seguinte. O isolamento que protege a conta acaba dividindo
+também o que não tinha motivo para ser dividido.
+
+A saída é separar mais uma vez o que estava junto por acidente. Quatro coisas
+são histórico e passam a ser um armazém comum, ligado por junction dentro de
+cada diretório de estado:
+
+- **`projects`** — transcrições das sessões e, dentro delas, a memória por
+  projeto;
+- **`file-history`** — as versões que sustentam o desfazer;
+- **`paste-cache`** — o que foi colado numa sessão e a transcrição referencia;
+- **`tasks`** — a saída das tarefas de fundo.
+
+O que continua sendo de cada plano, e nunca entra no armazém: `.claude.json`
+(conta), `.credentials.json` (token), `settings.json`, `skills` e `agents`
+(blindagem). O gerador recusa um mapa que tente compartilhar qualquer um deles
+— seria juntar as contas, que é o oposto do desenho.
+
+Três consequências merecem estar na frente de quem decide isso:
+
+- **retomar uma sessão do outro lado gasta o plano do comando que você
+  digitou**, não o plano que a criou. Unificar o histórico torna visível o que
+  antes estava escondido; a conta continua sendo decidida pelo comando, e o
+  cabeçalho continua denunciando quando a pasta discorda do nome.
+- **o conteúdo atravessa o limite.** Uma transcrição de trabalho passa a ser
+  legível e retomável a partir do plano pessoal. Onde isso não for aceitável, a
+  seção de compartilhamento não deve existir no mapa — sem ela, o comportamento
+  antigo continua valendo, plano por plano.
+- **ligar uma vez não resolve.** A CLI recria qualquer pasta que falte, e no dia
+  em que recriar, aquele plano volta a gravar num canto próprio sem avisar.
+  Por isso o vínculo é conferido a cada abertura de plano, e refeito quando
+  tiver se desfeito: pasta recriada com conteúdo é **mesclada**, nunca
+  sobrescrita. Arquivo de mesmo nome e conteúdo diferente não é descartado nem
+  colado ao lado do original — `file-history` e `projects` são namespaces lidos
+  por padrão de nome, e um sufixo colado ali produz arquivo que ninguém abre.
+  Ele sai inteiro para `.conflitos\<plano>\`, preservando o caminho relativo.
+  Mescla grande demais para a abertura de um terminal é recusada com o nome do
+  script que faz o trabalho completo: travar a subida da CLI seria pior que o
+  problema que isso resolve.
+
+O índice de memória é a exceção que confirma a regra. `MEMORY.md` é uma lista de
+ponteiros, um por memória: sobrescrever perde os dois lados, e guardar duas
+cópias faz a CLI carregar uma e ignorar a outra. Ele é fundido pela união das
+linhas — a única fusão que não perde nem duplica.
+
 Duas consequências importam para o diagnóstico deste projeto:
 
-- Cada perfil é um diretório de estado independente, e alguns passam de
-  centenas de MB. Eles entram nos inventários de espaço, mas nunca são
-  candidatos a limpeza automática.
+- Cada perfil é um diretório de estado independente, e o armazém comum de
+  histórico é mais um — com o histórico unificado, é ele que concentra os GB,
+  enquanto os diretórios por plano ficam pequenos. Todos entram nos inventários
+  de espaço, e nenhum é candidato a limpeza automática. A medição já ignora
+  pontos de reparse — sem isso, o mesmo arquivo seria contado uma vez por plano.
 - Para o antimalware, cada diretório é um alvo distinto. Excluir `.claude` não
   cobre `.claude-perfil-b`: irmão com prefixo comum não é caminho contido. Por
   isso `Get-PressureCliHomeCoverage` avalia um diretório por vez, em lugar de

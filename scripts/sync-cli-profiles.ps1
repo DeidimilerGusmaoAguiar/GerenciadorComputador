@@ -369,6 +369,35 @@ function Test-ProfileMap {
             }
         }
 
+        if (Test-MapProperty -InputObject $routing -Name 'sharedState') {
+            $shared = $routing.sharedState
+            if (
+                -not (Test-MapProperty -InputObject $shared -Name 'root') -or
+                [string]::IsNullOrWhiteSpace([string]$shared.root)
+            ) {
+                throw "routing.$cliName.sharedState sem 'root'."
+            }
+            $sharedFolders = if (Test-MapProperty -InputObject $shared -Name 'folders') { @($shared.folders) } else { @() }
+            $sharedFiles = if (Test-MapProperty -InputObject $shared -Name 'files') { @($shared.files) } else { @() }
+            if ($sharedFolders.Count -eq 0 -and $sharedFiles.Count -eq 0) {
+                throw "routing.$cliName.sharedState sem nada em 'folders' nem 'files'."
+            }
+            # Conta e blindagem nao sao historico. Compartilhar qualquer um
+            # destes juntaria as contas dos planos, que e' o oposto do desenho.
+            $proibidos = @('.claude.json', '.credentials.json', 'settings.json', 'skills', 'agents', 'plugins')
+            foreach ($nome in @($sharedFolders) + @($sharedFiles)) {
+                if ([string]$nome -in $proibidos) {
+                    throw (
+                        "routing.$cliName.sharedState tenta compartilhar '$nome'. " +
+                        'Esse arquivo pertence a conta ou a blindagem do plano, nao ao historico.'
+                    )
+                }
+                if ([string]$nome -match '[\\/]' -or [string]$nome -match '^\.\.') {
+                    throw "routing.$cliName.sharedState com nome invalido: $nome"
+                }
+            }
+        }
+
         # Rota para pasta inexistente nao e erro - repositorio pode nao estar
         # clonado nesta maquina - mas o silencio esconde erro de digitacao.
         if (Test-MapProperty -InputObject $routing -Name 'routes') {
@@ -415,7 +444,19 @@ function Get-MapDrift {
     } else {
         @()
     }
-    foreach ($path in @($mapped) + @($ignored)) {
+    # O store comum mora ao lado dos diretorios de estado e tem a mesma cara.
+    # Sem entrar aqui, ele apareceria como "perfil novo" em todo relatorio de
+    # deriva, convidando a criar um plano para algo que e' o oposto de um plano.
+    $sharedRoots = @(
+        if ($Map.PSObject.Properties.Name -contains 'routing') {
+            foreach ($cliName in @($Map.routing.PSObject.Properties.Name)) {
+                $routing = $Map.routing.$cliName
+                if ($routing.PSObject.Properties.Name -notcontains 'sharedState') { continue }
+                [string]$routing.sharedState.root
+            }
+        }
+    )
+    foreach ($path in @($mapped) + @($ignored) + @($sharedRoots | Where-Object { $_ })) {
         $null = $known.Add([IO.Path]::GetFullPath([string]$path))
     }
 
@@ -858,11 +899,13 @@ function Get-PlanoSkill {
 function Write-PlanoCabecalho {
     <#
     .SYNOPSIS
-    Imprime o cabecalho e garante a credencial da conta antes de subir.
+    Imprime o cabecalho e garante credencial e historico antes de subir.
 
     .DESCRIPTION
     Imprimir e sincronizar andam juntos de proposito: o que aparece na tela e o
-    estado com que a sessao vai subir, e nao o de antes da sincronizacao.
+    estado com que a sessao vai subir, e nao o de antes da sincronizacao. Sao
+    duas garantias distintas: a credencial e' da conta do lado, e o historico e'
+    de todos os lados ao mesmo tempo.
     #>
     param(
         [Parameter(Mandatory)]$Plano,
@@ -874,8 +917,12 @@ function Write-PlanoCabecalho {
     Write-Host ('    pasta  : ' + $Pasta) -ForegroundColor DarkGray
 
     Sync-PlanoCredencial -Cli $Plano.Cli -Side $Plano.Side
+    Assert-PlanoCompartilhado -Cli $Plano.Cli -Estado $Plano.Home
 
     $rota = $script:PlanoRota[$Plano.Cli]
+    if (-not [string]::IsNullOrWhiteSpace($rota.SharedRoot)) {
+        Write-Host ('    historico: ' + $rota.SharedRoot + ' (comum aos planos)') -ForegroundColor DarkGray
+    }
     $resumo = Get-PlanoResumo -Path $Plano.Home
     $conta = $resumo.Conta
     Write-Host ('    conta  : ' + $resumo.Texto) -ForegroundColor DarkGray
@@ -905,6 +952,134 @@ function Write-PlanoCabecalho {
         Write-Host '    atencao: diretorio de estado ainda nao existe; a CLI vai cria-lo' -ForegroundColor DarkYellow
     }
     Write-Host ''
+}
+
+function Assert-PlanoCompartilhado {
+    <#
+    .SYNOPSIS
+    Garante que o historico do plano aponta para o store comum antes de subir.
+
+    .DESCRIPTION
+    Sessao, memoria e anexos sao um store so para todos os lados: ligar isso uma
+    vez nao basta, porque a CLI recria qualquer pasta que falte e, no dia em que
+    recriar, aquele plano volta a gravar num canto proprio - em silencio. Esta
+    funcao roda a cada abertura e refaz o vinculo. Conta e blindagem nao passam
+    por aqui: .claude.json, .credentials.json, settings.json, skills e agents
+    continuam sendo de cada plano.
+
+    Pasta recriada com conteudo e' mesclada, nunca sobrescrita. Se a mescla for
+    grande demais para a abertura de um terminal, ela e' recusada com o nome do
+    script que faz o trabalho completo - travar a subida da CLI seria pior que o
+    problema que ela resolve.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Cli,
+        # Nao se chama Home: $Home e' automatica e somente leitura, e o parametro
+        # com esse nome derruba a funcao inteira na primeira atribuicao.
+        [Parameter(Mandatory)][string]$Estado
+    )
+
+    $rota = $script:PlanoRota[$Cli]
+    if ([string]::IsNullOrWhiteSpace($rota.SharedRoot)) { return }
+    # Diretorio que ainda nao existe e' da CLI criar. Ligar antes seria adivinhar.
+    if (-not (Test-Path -LiteralPath $Estado -PathType Container)) { return }
+
+    $limite = 500
+
+    foreach ($nome in $rota.SharedFolders) {
+        $alvo = Join-Path $rota.SharedRoot $nome
+        $link = Join-Path $Estado $nome
+        if (-not (Test-Path -LiteralPath $alvo -PathType Container)) {
+            $null = New-Item -ItemType Directory -Path $alvo -Force
+        }
+
+        $item = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            $destino = [string](@($item.Target) | Select-Object -First 1)
+            if (
+                $destino -and
+                ([IO.Path]::GetFullPath($destino).TrimEnd('\') -eq $alvo.TrimEnd('\'))
+            ) {
+                continue
+            }
+            [IO.Directory]::Delete($link, $false)
+            $item = $null
+        }
+
+        if ($item) {
+            $dentro = @(Get-ChildItem -LiteralPath $link -Recurse -Force -ErrorAction SilentlyContinue)
+            if ($dentro.Count -gt $limite) {
+                Write-Host (
+                    '    atencao: ' + $nome + ' voltou a ser pasta propria com ' + $dentro.Count +
+                    ' itens. Rode scripts\unify-plan-sessions.ps1 -Execute'
+                ) -ForegroundColor Red
+                continue
+            }
+            $sobrou = $false
+            foreach ($filho in @(Get-ChildItem -LiteralPath $link -Force -ErrorAction SilentlyContinue)) {
+                $para = Join-Path $alvo $filho.Name
+                if (Test-Path -LiteralPath $para) { $sobrou = $true; continue }
+                try { Move-Item -LiteralPath $filho.FullName -Destination $para -ErrorAction Stop }
+                catch { $sobrou = $true }
+            }
+            if ($sobrou) {
+                Write-Host (
+                    '    atencao: ' + $nome + ' tem itens que nao puderam ser unidos. ' +
+                    'Rode scripts\unify-plan-sessions.ps1 -Execute'
+                ) -ForegroundColor Red
+                continue
+            }
+            Remove-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
+        }
+
+        try {
+            $null = New-Item -ItemType Junction -Path $link -Target $alvo -ErrorAction Stop
+            Write-Host ('    religado: ' + $nome + ' -> store comum') -ForegroundColor DarkYellow
+        } catch {
+            Write-Host ('    atencao: nao consegui religar ' + $nome) -ForegroundColor Red
+        }
+    }
+
+    foreach ($nome in $rota.SharedFiles) {
+        $alvo = Join-Path $rota.SharedRoot $nome
+        $link = Join-Path $Estado $nome
+        $temAlvo = Test-Path -LiteralPath $alvo -PathType Leaf
+        $temLink = Test-Path -LiteralPath $link -PathType Leaf
+
+        if ($temAlvo -and $temLink) {
+            # Hardlink e' o mesmo arquivo: tamanho e data batem por definicao.
+            # Se divergiram, a ligacao se rompeu e as duas pontas tem conteudo.
+            $a = Get-Item -LiteralPath $alvo -Force
+            $b = Get-Item -LiteralPath $link -Force
+            if (($a.Length -eq $b.Length) -and ($a.LastWriteTimeUtc -eq $b.LastWriteTimeUtc)) { continue }
+        }
+
+        $linhas = [Collections.Generic.List[string]]::new()
+        $vistas = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($fonte in @($alvo, $link)) {
+            if (-not (Test-Path -LiteralPath $fonte -PathType Leaf)) { continue }
+            foreach ($linha in Get-Content -LiteralPath $fonte -ErrorAction SilentlyContinue) {
+                if ([string]::IsNullOrWhiteSpace($linha)) { continue }
+                if ($vistas.Add($linha)) { $linhas.Add($linha) }
+            }
+        }
+        $ordenadas = @(
+            $linhas | Sort-Object -Property @{ Expression = {
+                if ($_ -match '"timestamp"\s*:\s*(\d+)') { [long]$Matches[1] } else { 0 }
+            } }
+        )
+        try {
+            if (-not (Test-Path -LiteralPath $rota.SharedRoot -PathType Container)) {
+                $null = New-Item -ItemType Directory -Path $rota.SharedRoot -Force
+            }
+            Set-Content -LiteralPath $alvo -Value $ordenadas -Encoding utf8NoBOM -ErrorAction Stop
+            if ($temLink) { Remove-Item -LiteralPath $link -Force -ErrorAction Stop }
+            $null = New-Item -ItemType HardLink -Path $link -Target $alvo -ErrorAction Stop
+            Write-Host ('    religado: ' + $nome + ' (' + $ordenadas.Count + ' linhas)') -ForegroundColor DarkYellow
+        } catch {
+            Write-Host ('    atencao: nao consegui religar ' + $nome) -ForegroundColor Red
+        }
+    }
 }
 
 function Invoke-PlanoCli {
@@ -974,6 +1149,24 @@ function Show-PlanoStatus {
         Write-Host ('  ' + $rota.Variable + ': nao definida - a CLI usaria o diretorio padrao')
     } else {
         Write-Host ('  ' + $rota.Variable + ': ' + $ativo)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($rota.SharedRoot)) {
+        # Um plano solto nao e' visivel no uso: ele so grava em outro canto e
+        # some do -r. Por isso o diagnostico conta os vinculos, e nao a pasta.
+        $soltos = @()
+        foreach ($chave in $rota.Dir.Keys) {
+            $casa = $rota.Dir[$chave]
+            if (-not (Test-Path -LiteralPath $casa -PathType Container)) { continue }
+            foreach ($nome in $rota.SharedFolders) {
+                $link = Get-Item -LiteralPath (Join-Path $casa $nome) -Force -ErrorAction SilentlyContinue
+                if ($link -and ($link.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+                $soltos += ($rota.Label[$chave] + '\' + $nome)
+            }
+        }
+        Write-Host ('  Historico  : ' + $rota.SharedRoot + '   (comum aos planos)')
+        if ($soltos.Count -gt 0) {
+            Write-Host ('               solto: ' + ($soltos -join ', ')) -ForegroundColor Red
+        }
     }
     Write-Host ''
     foreach ($lado in $rota.Sides) {
@@ -1071,6 +1264,21 @@ function New-RoutingLines {
 
     $compartilha = (Test-MapProperty -InputObject $Routing -Name 'shareCredentials') -and [bool]$Routing.shareCredentials
     $lines.Add("    ShareCredentials = `$" + $compartilha.ToString().ToLowerInvariant())
+
+    # Store comum de historico. Sem a secao no mapa os campos saem vazios e o
+    # perfil se comporta como antes: cada plano com o proprio historico.
+    if (Test-MapProperty -InputObject $Routing -Name 'sharedState') {
+        $shared = $Routing.sharedState
+        $sharedFolders = if (Test-MapProperty -InputObject $shared -Name 'folders') { @($shared.folders) } else { @() }
+        $sharedFiles = if (Test-MapProperty -InputObject $shared -Name 'files') { @($shared.files) } else { @() }
+        $lines.Add('    SharedRoot = ' + (ConvertTo-GeneratedPath -Path ([string]$shared.root)))
+        $lines.Add("    SharedFolders = @(" + (($sharedFolders | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ")")
+        $lines.Add("    SharedFiles = @(" + (($sharedFiles | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ")")
+    } else {
+        $lines.Add("    SharedRoot = ''")
+        $lines.Add('    SharedFolders = @()')
+        $lines.Add('    SharedFiles = @()')
+    }
     $lines.Add('    Accounts = @{')
     if (Test-MapProperty -InputObject $Routing -Name 'accounts') {
         foreach ($side in @($Routing.accounts.PSObject.Properties.Name)) {
