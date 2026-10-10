@@ -1691,8 +1691,9 @@ function Invoke-PlanoApi {
     if ($estado.Estourou -or ($estado.Saida -notmatch 'Estado:\s*DESBLOQUEADO')) {
         $motivo = $(if ($estado.Estourou) { 'cofre sem resposta em ' + $prazo + ' s' } else { 'cofre travado' })
         Write-Host ('  Recusado: ' + $motivo + ' (' + (Split-Path -Leaf $api.VaultFile) + '). Sem ninguem na maquina ele nao abre sozinho.') -ForegroundColor Red
-        Write-Host '  Destrave (pede a senha uma vez e vale 8 h) e repita:' -ForegroundColor DarkGray
+        Write-Host '  Destrave e repita (pede a senha uma vez; vale o prazo do cofre e sobrevive a reinicio):' -ForegroundColor DarkGray
         Write-Host ('    ' + ($runner -join ' ') + ' ' + $api.VaultScript + ' --vault ' + $api.VaultFile + ' unlock') -ForegroundColor DarkGray
+        Write-Host ('    (todos os cofres de uma vez: ' + ($runner -join ' ') + ' ' + $api.VaultScript + ' unlock --todos)') -ForegroundColor DarkGray
         & $registrarZero $motivo
         return
     }
