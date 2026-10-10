@@ -426,6 +426,12 @@ function Test-ProfileMap {
                     'sem isso uma chave esquecida no ambiente derrubaria as sessoes do plano.'
                 )
             }
+            if (Test-MapProperty -InputObject $api -Name 'vaultTimeoutSeconds') {
+                $n = 0
+                if (-not [int]::TryParse([string]$api.vaultTimeoutSeconds, [ref]$n) -or $n -lt 1 -or $n -gt 600) {
+                    throw "routing.$cliName.apiKeys.vaultTimeoutSeconds deve ser inteiro de 1 a 600."
+                }
+            }
             $temBudget = Test-MapProperty -InputObject $api -Name 'budgetFile'
             $temLedger = Test-MapProperty -InputObject $api -Name 'ledgerFile'
             if ($temBudget -ne $temLedger) {
@@ -1552,6 +1558,43 @@ function Show-PlanoApiSaldo {
     Write-Host ''
 }
 
+function Invoke-PlanoProcesso {
+    <#
+    .SYNOPSIS
+    Roda um programa com prazo, entrada fechada e saida capturada.
+
+    .DESCRIPTION
+    Feito para o cofre. Cofre travado sem pessoa na maquina espera a senha para
+    sempre: ja segurou uma chamada agendada por 3 h. Aqui a entrada fecha na hora,
+    a saida nao passa pelo console e o processo e' encerrado no prazo.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Programa,
+        [AllowEmptyCollection()][object[]]$Argumentos = @(),
+        [int]$Segundos = 30
+    )
+    $achado = Get-Command $Programa -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    $psi = New-Object Diagnostics.ProcessStartInfo
+    $psi.FileName = $(if ($achado) { $achado.Source } else { $Programa })
+    $psi.Arguments = ((@($Argumentos) | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' ')
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = $true
+    $psi.CreateNoWindow = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    $p.StandardInput.Close()
+    $saida = $p.StandardOutput.ReadToEndAsync()
+    $null = $p.StandardError.ReadToEndAsync()
+    if (-not $p.WaitForExit($Segundos * 1000)) {
+        # Kill(arvore) existe no PowerShell 7; no 5.1 so o processo direto.
+        try { $p.Kill($true) } catch { try { $p.Kill() } catch { } }
+        return [pscustomobject]@{ Saida = ''; Codigo = $null; Estourou = $true }
+    }
+    $p.WaitForExit()
+    return [pscustomobject]@{ Saida = [string]$saida.Result; Codigo = $p.ExitCode; Estourou = $false }
+}
+
 function Invoke-PlanoApi {
     <#
     .SYNOPSIS
@@ -1619,18 +1662,53 @@ function Invoke-PlanoApi {
         return
     }
     $runner = @($api.Runner)
-    $argsCofre = @($runner | Select-Object -Skip 1) + @($api.VaultScript, '--vault', $api.VaultFile, 'get', $api.Entry[$Side], '--show')
-    # Escopo proprio com Continue: no Windows PowerShell 5.1, sob Stop, o stderr
-    # do cofre vira excecao mesmo com 2>$null e a mensagem abaixo nunca sairia.
-    $valor = (& {
-        $ErrorActionPreference = 'Continue'
-        & $runner[0] @argsCofre 2>$null
-    } | Out-String).Trim()
-    if (($LASTEXITCODE -ne 0) -or [string]::IsNullOrEmpty($valor)) {
+    $baseCofre = @($runner | Select-Object -Skip 1) + @($api.VaultScript, '--vault', $api.VaultFile)
+    $prazo = 30
+    if ($api.ContainsKey('VaultTimeout') -and $api.VaultTimeout) { $prazo = [int]$api.VaultTimeout }
+    $registrarZero = {
+        param([string]$Motivo)
+        if ($conta) {
+            Add-PlanoApiRegistro -Arquivo $api.LedgerFile -Dados ([ordered]@{
+                quando = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ss', [Globalization.CultureInfo]::InvariantCulture)
+                lado = $Side
+                projeto = $conta.Projeto
+                pasta = (Get-PlanoPastaAtual)
+                programa = (Split-Path -Leaf ([string]$programa))
+                modelo = (Get-PlanoArgValor -Lista $resto -Nome '--model')
+                teto = $conta.Teto
+                custo = 0.0
+                saida = $null
+                duracao_s = 0
+                sessao = $null
+                nota = ('nao iniciou: ' + $Motivo)
+            })
+        }
+    }
+
+    # Estado antes da leitura: o status nunca pede senha. Travado, recusa na hora
+    # em vez de esperar uma senha que ninguem vai digitar.
+    $estado = Invoke-PlanoProcesso -Programa $runner[0] -Argumentos ($baseCofre + @('status')) -Segundos $prazo
+    if ($estado.Estourou -or ($estado.Saida -notmatch 'Estado:\s*DESBLOQUEADO')) {
+        $motivo = $(if ($estado.Estourou) { 'cofre sem resposta em ' + $prazo + ' s' } else { 'cofre travado' })
+        Write-Host ('  Recusado: ' + $motivo + ' (' + (Split-Path -Leaf $api.VaultFile) + '). Sem ninguem na maquina ele nao abre sozinho.') -ForegroundColor Red
+        Write-Host '  Destrave (pede a senha uma vez e vale 8 h) e repita:' -ForegroundColor DarkGray
+        Write-Host ('    ' + ($runner -join ' ') + ' ' + $api.VaultScript + ' --vault ' + $api.VaultFile + ' unlock') -ForegroundColor DarkGray
+        & $registrarZero $motivo
+        return
+    }
+    $leitura = Invoke-PlanoProcesso -Programa $runner[0] -Argumentos ($baseCofre + @('get', $api.Entry[$Side], '--show')) -Segundos $prazo
+    $valor = ([string]$leitura.Saida).Trim()
+    if ($leitura.Estourou -or ($leitura.Codigo -ne 0) -or [string]::IsNullOrEmpty($valor)) {
         $valor = $null
-        Write-Host ('  Sem chave no cofre: ' + $api.Entry[$Side] + ' em ' + (Split-Path -Leaf $api.VaultFile) + '.') -ForegroundColor Red
-        Write-Host '  Crie a chave na organizacao de API vinculada a este plano e guarde com:' -ForegroundColor DarkGray
-        Write-Host ('    ' + ($runner -join ' ') + ' ' + $api.VaultScript + ' --vault ' + $api.VaultFile + ' set ' + $api.Entry[$Side]) -ForegroundColor DarkGray
+        if ($leitura.Estourou) {
+            Write-Host ('  Recusado: o cofre nao entregou a chave em ' + $prazo + ' s (travou entre a conferencia e a leitura?). Destrave e repita.') -ForegroundColor Red
+            & $registrarZero ('cofre sem resposta em ' + $prazo + ' s na leitura')
+        } else {
+            Write-Host ('  Sem chave no cofre: ' + $api.Entry[$Side] + ' em ' + (Split-Path -Leaf $api.VaultFile) + '.') -ForegroundColor Red
+            Write-Host '  Crie a chave na organizacao de API vinculada a este plano e guarde com:' -ForegroundColor DarkGray
+            Write-Host ('    ' + ($runner -join ' ') + ' ' + $api.VaultScript + ' --vault ' + $api.VaultFile + ' set ' + $api.Entry[$Side]) -ForegroundColor DarkGray
+            & $registrarZero 'sem chave no cofre'
+        }
         return
     }
 
@@ -1932,6 +2010,9 @@ function New-RoutingLines {
         $lines.Add('        VaultFile = ' + (ConvertTo-GeneratedPath -Path ([string]$api.vaultFile)))
         $lines.Add('        Runner = @(' + (($runner | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ')')
         $lines.Add('        PrintFlags = @(' + (($printFlags | ForEach-Object { "'" + ([string]$_).Replace("'", "''") + "'" }) -join ', ') + ')')
+        $prazoCofre = 30
+        if (Test-MapProperty -InputObject $api -Name 'vaultTimeoutSeconds') { $prazoCofre = [int]$api.vaultTimeoutSeconds }
+        $lines.Add("        VaultTimeout = $prazoCofre")
         # Sem orcamento declarado, nada e' conferido nem registrado: comportamento anterior.
         foreach ($par in @(@('BudgetFile', 'budgetFile'), @('LedgerFile', 'ledgerFile'))) {
             if (Test-MapProperty -InputObject $api -Name $par[1]) {

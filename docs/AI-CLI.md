@@ -315,7 +315,14 @@ teto, custo e sessão. Com `--output-format json` ou `stream-json` o custo é o
 medido pela CLI; sem isso, conta o teto. O registro é gravado mesmo se a chamada
 for interrompida, e várias sessões podem gravar ao mesmo tempo. Programa que nem
 chegou a iniciar — "não reconhecido", mesmo depois de uma segunda tentativa —
-entra com custo zero e o motivo, e o diagnóstico sai na tela. `budgetCommand`
+entra com custo zero e o motivo, e o diagnóstico sai na tela.
+
+O cofre é consultado antes de ler a chave, pelo estado que ele informa sem pedir
+senha. Travado, a chamada é recusada na hora, com o comando de destravar e custo
+zero no registro — sem pessoa na máquina, esperar a senha seria esperar para
+sempre, e isso já segurou uma chamada agendada por três horas. A leitura tem
+prazo (`vaultTimeoutSeconds`, 30 s por padrão), a entrada do processo do cofre
+fecha na hora e, se ele não responder, é encerrado. `budgetCommand`
 gera o comando que mostra, por lado, ciclo, alocado, gasto e o que resta de cada
 projeto. Recusa nunca abre o cofre, então nunca pede senha à toa.
 
