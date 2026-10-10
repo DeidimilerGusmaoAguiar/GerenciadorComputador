@@ -1576,7 +1576,12 @@ function Invoke-PlanoProcesso {
     $achado = Get-Command $Programa -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     $psi = New-Object Diagnostics.ProcessStartInfo
     $psi.FileName = $(if ($achado) { $achado.Source } else { $Programa })
-    $psi.Arguments = ((@($Argumentos) | ForEach-Object { '"' + ([string]$_).Replace('"', '\"') + '"' }) -join ' ')
+    # Aspas so onde precisa: o lancador py nao reconhece "-3" entre aspas como
+    # opcao de versao e sai com codigo 2 - o cofre parecia travado sem estar.
+    $psi.Arguments = ((@($Argumentos) | ForEach-Object {
+        $a = [string]$_
+        if ($a -match '^[^\s"]+$') { $a } else { '"' + $a.Replace('"', '\"') + '"' }
+    }) -join ' ')
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
