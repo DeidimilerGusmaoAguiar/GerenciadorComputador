@@ -178,6 +178,34 @@ PowerShell:
 Use `-Execute` sem `-WhatIf` somente depois de revisar o manifesto, confirmar a
 raiz, o número de diretórios e os bytes planejados.
 
+## Diretórios temporários antigos
+
+Para filhos diretos de uma raiz (pastas `.tmp-*` de agentes, resíduo de testes
+no `%TEMP%`), gere primeiro um manifesto somente leitura. `-SkipSize` evita
+medir quando há centenas de milhares de pastas:
+
+```powershell
+$manifest = & .\scripts\measure-stale-directories.ps1 `
+  -Root 'C:\Repos\meu-projeto' -Include '^\.tmp-' -Exclude '^\.tmp-auth$' -MinAgeDays 7
+```
+
+O removedor confere tudo de novo na hora, não só o que o manifesto diz: nome
+contra `include` e contra os bloqueios (`criteria.exclude`, `bloqueioRegex` e
+`-BlockPattern`), idade mínima, arquivo `LEIA-ME-NAO-APAGAR.md`, reparse point
+no alvo ou em qualquer subdiretório e processo vivo com o caminho na linha de
+comando. Um item bloqueado é recusado mesmo se estiver no manifesto. Com
+`-Execute`, ele aborta antes de apagar se houver build (`dotnet`, `MSBuild`,
+`devenv`, `VBCSCompiler`) ou teste (`pytest`, `unittest`, mutantes) rodando.
+
+```powershell
+& .\scripts\remove-stale-directories.ps1 `
+  -ManifestPath $manifest `
+  -ExpectedRoot 'C:\Repos\meu-projeto'
+```
+
+Sem `-Execute`, nada é removido. O log JSONL em `reports\` registra o status de
+cada alvo e o espaço livre antes e depois.
+
 ## Ponto de restauração
 
 O script apenas apresenta o plano por padrão:
@@ -207,9 +235,11 @@ pwsh -NoProfile -File .\scripts\new-cleanup-checkpoint.ps1 `
 | `measure-folder-children.ps1` | Medição paralela de pastas declaradas | Não |
 | `measure-repo-artifacts.ps1` | Manifesto de `bin`, `obj`, `.vs` e `TestResults` | Não |
 | `measure-root-folders.ps1` | Medição das pastas de uma unidade | Não |
+| `measure-stale-directories.ps1` | Manifesto de subdiretórios antigos de uma raiz | Não |
 | `monitor-perf.ps1` | Monitoramento temporário de CPU e commit real | Não |
 | `new-cleanup-checkpoint.ps1` | Dry-run ou ponto de restauração | Só com `-Execute` |
 | `remove-build-artifacts.ps1` | Dry-run ou remoção validada de builds | Só com `-Execute` |
+| `remove-stale-directories.ps1` | Dry-run ou remoção revalidada de subdiretórios antigos | Só com `-Execute` |
 | `start-pressure-dashboard.ps1` | Painel local de CPU, memória, disco, GPU, rede e processos | Não |
 | `stop-pressure-cli-session.ps1` | Dry-run ou encerramento nominal de árvore órfã revalidada | Só com `-Execute` |
 | `record-pressure.ps1` | Gravação desassistida do histórico de pressão, sem servidor nem navegador | Não |

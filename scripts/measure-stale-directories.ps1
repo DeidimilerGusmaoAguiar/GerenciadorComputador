@@ -102,7 +102,7 @@ $manifest = [ordered]@{
     skipped = $skipped
     selectedCount = $selected.Count
     sizeMeasured = (-not $SkipSize)
-    totalBytes = [int64](($measured | Measure-Object Bytes -Sum).Sum)
+    totalBytes = if ($measured.Count -gt 0) { [int64]($measured | Measure-Object Bytes -Sum).Sum } else { [int64]0 }
     directories = @($selected)
 }
 
