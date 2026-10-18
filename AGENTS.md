@@ -100,6 +100,11 @@ Regras absolutas:
    com raiz, categoria, quantidade de itens e bytes declarados.
 2. A aprovação de uma categoria não autoriza a próxima. Configuração de
    permissões de uma CLI também não equivale à aprovação do usuário.
+   Única exceção permanente: a tarefa de `install-temp-sweeper.ps1` roda
+   `sweep-temp-residue.ps1 -Execute` sem aprovação por sessão, porque o dono a
+   aprovou ao instalá-la. Ela cobre só os grupos de `local\temp-sweeper.json`.
+   Acrescentar grupo ou prefixo, afrouxar idade ou tirar exclusão exige nova
+   aprovação explícita.
 3. Antes de mudança não trivial em serviço, inicialização, registro, DISM ou
    desinstalação em lote, crie um ponto de restauração e confirme que ele existe.
 4. Para arquivos do usuário ou de origem ambígua, prefira mover para

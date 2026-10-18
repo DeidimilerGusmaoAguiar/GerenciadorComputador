@@ -206,6 +206,45 @@ comando. Um item bloqueado é recusado mesmo se estiver no manifesto. Com
 Sem `-Execute`, nada é removido. O log JSONL em `reports\` registra o status de
 cada alvo e o espaço livre antes e depois.
 
+## Varredura diária do %TEMP%
+
+Testes que criam pastas com `tempfile.mkdtemp` e as apagam com
+`shutil.rmtree(..., ignore_errors=True)` deixam resíduo no Windows sempre que há
+arquivo somente leitura dentro delas, como os objetos de um `git init`. Os testes
+passam, a limpeza falha em silêncio e o `%TEMP%` acumula centenas de milhares de
+pastas. A correção é na origem; a varredura é a rede de segurança para o que
+escapar, inclusive processo morto por timeout.
+
+`sweep-temp-residue.ps1` lê os grupos de nomes de `local\temp-sweeper.json`,
+porque os prefixos variam de máquina para máquina. Copie
+`docs\temp-sweeper.example.json`, troque `host` pelo nome da máquina e liste só
+os prefixos cuja origem você conferiu. Para cada grupo, ele gera um manifesto
+novo e o entrega ao removedor acima, que revalida cada pasta na hora:
+
+- idade mínima de um dia; nomes aleatórios (`tmpXXXXXXXX`, 8.3) só saem se a
+  última escrita for anterior ao último boot;
+- sai sem remover se o gate de disco, RAM, commit ou Windows Terminal falhar, ou
+  se houver build ou teste rodando, e tenta de novo na próxima execução;
+- para se um processo protegido sumir no meio; duas instâncias não rodam juntas;
+- uma pasta com `LEIA-ME-NAO-APAGAR.md` dentro nunca é removida.
+
+```powershell
+pwsh -NoProfile -File .\scripts\sweep-temp-residue.ps1            # simula
+pwsh -NoProfile -File .\scripts\install-temp-sweeper.ps1          # mostra a tarefa
+pwsh -NoProfile -File .\scripts\install-temp-sweeper.ps1 -Execute # instala
+pwsh -NoProfile -File .\scripts\report-temp-sweeper.ps1           # eficiência
+```
+
+A tarefa roda na conta do usuário, sem elevação e sem abrir janela, todo dia às
+03:00, e repete a cada 3 h até o fim do dia para cobrir abortos. Depois de uma
+execução bem-sucedida, as seguintes do mesmo dia saem sem fazer nada.
+`-Uninstall -Execute` remove a tarefa, exportando antes o XML dela.
+
+Cada execução grava uma linha em `reports\temp-sweeper\historico.jsonl`. O
+relatório mostra se a varredura completa, o motivo dos abortos e quantas pastas
+nascem por dia em cada prefixo, comparando dois períodos. É essa taxa que diz se
+a correção na origem funcionou.
+
 ## Ponto de restauração
 
 O script apenas apresenta o plano por padrão:
@@ -240,6 +279,9 @@ pwsh -NoProfile -File .\scripts\new-cleanup-checkpoint.ps1 `
 | `new-cleanup-checkpoint.ps1` | Dry-run ou ponto de restauração | Só com `-Execute` |
 | `remove-build-artifacts.ps1` | Dry-run ou remoção validada de builds | Só com `-Execute` |
 | `remove-stale-directories.ps1` | Dry-run ou remoção revalidada de subdiretórios antigos | Só com `-Execute` |
+| `sweep-temp-residue.ps1` | Varredura do resíduo de teste no `%TEMP%`, por grupos locais | Só com `-Execute` |
+| `install-temp-sweeper.ps1` | Mostra, instala ou remove a tarefa diária da varredura | Só com `-Execute` |
+| `report-temp-sweeper.ps1` | Eficiência da varredura: abortos e pastas criadas por dia | Não |
 | `start-pressure-dashboard.ps1` | Painel local de CPU, memória, disco, GPU, rede e processos | Não |
 | `stop-pressure-cli-session.ps1` | Dry-run ou encerramento nominal de árvore órfã revalidada | Só com `-Execute` |
 | `record-pressure.ps1` | Gravação desassistida do histórico de pressão, sem servidor nem navegador | Não |

@@ -1,0 +1,29 @@
+{
+  "host": "MEU-PC",
+  "observacao": "Copie para local\\temp-sweeper.json, troque host pelo nome desta maquina e liste so prefixos cuja origem voce conferiu no codigo que os cria.",
+  "exclude": [
+    "^claude$",
+    "^pytest-of-",
+    "^Docker"
+  ],
+  "grupos": [
+    {
+      "nome": "prefixos",
+      "idadeMinimaDias": 1,
+      "include": [
+        "^(meu-teste-|outro-teste-)"
+      ]
+    },
+    {
+      "nome": "aleatorios",
+      "somenteAntesDoBoot": true,
+      "include": [
+        "^tmp[a-z0-9_]{8}$",
+        "^[a-z0-9]{8}\\.[a-z0-9]{3}$"
+      ]
+    }
+  ],
+  "maxPorManifesto": 120000,
+  "ramMinimaGB": 4,
+  "commitMaximoPct": 80
+}
