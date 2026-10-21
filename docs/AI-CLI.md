@@ -332,6 +332,58 @@ PowerShell 5.1, programa nativo ainda perde aspas duplas internas dos argumentos
 limitação do 5.1, que vale também para os comandos de plano; o PowerShell 7 não
 tem esse defeito.
 
+### Plano, crédito de API e crédito de nuvem
+
+São três fontes diferentes, e nenhuma cobre a outra:
+
+| Fonte | Paga | Onde ver |
+|---|---|---|
+| Plano | sessão interativa e `claude -p` sem chave, na máquina | `/usage` |
+| Crédito de API | só o que roda com a chave da organização | comando de saldo do `apiKeys` |
+| Crédito de nuvem | só sessão na nuvem (claude.ai/code, rotinas) | página do claude.ai |
+
+O crédito de nuvem, quando a conta tem, é um valor único com validade. Ele se
+aplica sozinho às sessões na nuvem e, acabado ou vencido, a sessão na nuvem
+passa a gastar o limite do plano. Numa conta sem esse crédito, toda sessão na
+nuvem gasta o plano. A CLI não mostra o saldo.
+
+`scripts\creditos-resumo.ps1` mostra as três lado a lado, somente leitura: o
+`/usage` de cada conta (comando local, que não gasta limite), o saldo do
+crédito de API e o do crédito de nuvem.
+
+`scripts\nuvem-credito.ps1` faz para o crédito de nuvem o que o `apiKeys` faz
+para o de API, com orçamento e registro em `local\creditos-nuvem\`. O orçamento
+declara, por lado, conta, crédito, validade, diretório de estado, ambiente de
+nuvem e o último saldo lido na página; as alocações dão a cada projeto uma pasta
+raiz, o repositório no GitHub e um teto. Antes de lançar, o script recusa:
+
+- pasta fora de uma alocação;
+- lado sem crédito de nuvem, porque a sessão gastaria o plano;
+- crédito vencido;
+- soma dos tetos do projeto acima da alocação, ou teto acima do saldo estimado.
+
+`claude --cloud` só cria sessão no modo interativo. Por isso a sessão é criada
+como rotina de execução única, pela CLI logada na conta do lado, numa pasta
+vazia e sem chave de API no ambiente. A credencial não passa pelo script. O
+custo real não chega à CLI: cada sessão entra no registro pelo teto declarado,
+até o dono informar o saldo da página.
+
+```powershell
+pwsh -NoProfile -File .\scripts\creditos-resumo.ps1
+pwsh -NoProfile -File .\scripts\nuvem-credito.ps1 -Saldo
+pwsh -NoProfile -File .\scripts\nuvem-credito.ps1 -ArquivoTarefa .\tarefa.md -Titulo T-1 -Teto 2 -Modelo sonnet   # dry-run
+pwsh -NoProfile -File .\scripts\nuvem-credito.ps1 -ArquivoTarefa .\tarefa.md -Titulo T-1 -Teto 2 -Modelo sonnet -Execute
+```
+
+A sessão na nuvem clona o repositório do GitHub, não a pasta local: o que não
+está no remoto — dados locais, cofre, chaves — não existe lá.
+
+Medido em uso real: depois de uma sessão de trabalho criada por rotina, a página
+continuou mostrando o crédito de nuvem inteiro, e o uso do plano subiu. Até a
+página mostrar o débito, trate a sessão criada por rotina como uso do **plano**.
+O orçamento aceita uma `pausa` por lado: com ela preenchida, o lançador recusa
+tudo e mostra o motivo.
+
 ### Mantendo os hosts sincronizados
 
 Windows PowerShell 5.1 e PowerShell 7 leem arquivos de perfil diferentes
