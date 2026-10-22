@@ -564,6 +564,29 @@ if (Test-Path -LiteralPath (Join-Path $repoRoot '.git')) {
     Assert-PublicCondition `
         -Condition ($trackedLocalData.Count -eq 0) `
         -Message 'Git contem relatorios, quarentena ou arquivos locais'
+
+    # A mensagem de commit tambem vai a publico, e em 18/10/2026 um nome de
+    # maquina saiu por ela com a suite verde. So os commits que nenhum remoto
+    # tem: o que ja foi publicado nao muda sem reescrever o historico, e um
+    # achado antigo reprovaria todo push dali em diante.
+    $unpublishedCommits = @(git -C $repoRoot rev-list HEAD --not --remotes 2>$null)
+    foreach ($commit in $unpublishedCommits) {
+        $message = (git -C $repoRoot log -1 --format=%B $commit) -join "`n"
+        $shortCommit = $commit.Substring(0, 7)
+        Assert-PublicCondition `
+            -Condition (-not $concreteUserPath.IsMatch($message)) `
+            -Message "Perfil de usuario concreto na mensagem do commit $shortCommit"
+        foreach ($pattern in $credentialPatterns) {
+            Assert-PublicCondition `
+                -Condition (-not $pattern.IsMatch($message)) `
+                -Message "Possivel credencial na mensagem do commit $shortCommit"
+        }
+        foreach ($pattern in $localTermPatterns) {
+            Assert-PublicCondition `
+                -Condition (-not $pattern.IsMatch($message)) `
+                -Message "Termo local (maquina, usuario ou projeto) na mensagem do commit $shortCommit"
+        }
+    }
 }
 
 if ($failures.Count -gt 0) {

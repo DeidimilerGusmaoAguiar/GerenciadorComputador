@@ -314,7 +314,8 @@ pwsh -NoProfile -File .\tests\Test-PressureDashboard.ps1
 
 Ele valida sintaxe PowerShell, arquivos obrigatórios, caminhos pessoais,
 referências corporativas, adaptadores das quatro CLIs e gates dos scripts que
-podem alterar o sistema. O segundo teste valida as regras de pressão e executa
+podem alterar o sistema. Nas mensagens dos commits que ainda não estão em
+nenhum remoto, confere os mesmos termos locais, caminhos e credenciais. O segundo teste valida as regras de pressão e executa
 uma única coleta integrada, somente leitura.
 
 ## Contribuição e licença
