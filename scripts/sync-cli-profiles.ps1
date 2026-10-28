@@ -264,6 +264,12 @@ function Test-ProfileMap {
         if ([string]$entry.color -notin [Enum]::GetNames([ConsoleColor])) {
             throw "Cor invalida no perfil $($entry.home): $($entry.color)"
         }
+        if (
+            (Test-MapProperty -InputObject $entry -Name 'tabColor') -and
+            [string]$entry.tabColor -notmatch '^#[0-9A-Fa-f]{6}$'
+        ) {
+            throw "tabColor invalida no perfil $($entry.home): $($entry.tabColor). Use #RRGGBB."
+        }
 
         $hasAlias = (Test-MapProperty -InputObject $entry -Name 'alias') -and
             -not [string]::IsNullOrWhiteSpace([string]$entry.alias)
@@ -679,6 +685,10 @@ function Resolve-PlanoEstado {
     if (-not $rota.Dir.ContainsKey($chave)) {
         throw "Plano sem diretorio de estado declarado: $chave"
     }
+    $corAba = $null
+    if ($rota.ContainsKey('TabColor') -and $rota.TabColor.ContainsKey($chave)) {
+        $corAba = $rota.TabColor[$chave]
+    }
     return [pscustomobject]@{
         Cli = $Cli
         Side = $Side
@@ -686,7 +696,31 @@ function Resolve-PlanoEstado {
         Home = $rota.Dir[$chave]
         Label = $rota.Label[$chave]
         Color = $rota.Color[$chave]
+        TabColor = $corAba
     }
+}
+
+function Set-PlanoCorAba {
+    # Pinta a aba do Windows Terminal com a cor do plano enquanto a CLI roda.
+    # DECAC (CSI 2;fg;bg ,|) aponta a moldura para um indice da paleta; o indice
+    # 100 recebe antes a cor exata por OSC 4. Vale tambem em aba aberta por perfil
+    # com tabColor proprio. Fora do Terminal, ou com saida redirecionada, nada.
+    param([AllowNull()][string]$Cor)
+    if (-not $env:WT_SESSION -or [Console]::IsOutputRedirected) { return $false }
+    if ($Cor -notmatch '^#([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})([0-9A-Fa-f]{2})$') { return $false }
+    $e = [char]27
+    $rgb = ($Matches[1] + '/' + $Matches[2] + '/' + $Matches[3]).ToLowerInvariant()
+    [Console]::Write($e + ']4;100;rgb:' + $rgb + $e + '\')
+    [Console]::Write($e + '[2;15;100,|')
+    return $true
+}
+
+function Reset-PlanoCorAba {
+    # Volta a moldura aos indices padrao do Terminal (263/264): a aba recupera a
+    # cor do perfil, ou fica sem cor. O indice 100 volta ao valor original.
+    $e = [char]27
+    [Console]::Write($e + '[2;263;264,|')
+    [Console]::Write($e + ']104;100' + $e + '\')
 }
 
 function Get-PlanoConta {
@@ -1308,7 +1342,9 @@ function Invoke-PlanoCli {
     $had = Test-Path ('Env:\' + $rota.Variable)
     $anterior = [Environment]::GetEnvironmentVariable($rota.Variable)
     $guardadas = Save-PlanoCredencialEnv -Cli $Cli
+    $pintou = $false
     try {
+        $pintou = Set-PlanoCorAba -Cor $plano.TabColor
         if ($guardadas.Count -gt 0) {
             Write-Host ('  ' + (@($guardadas.Keys) -join ', ') +
                 ' fora desta sessao: passaria na frente do plano e a sessao cobraria a API.') -ForegroundColor Yellow
@@ -1329,6 +1365,7 @@ function Invoke-PlanoCli {
             [Environment]::SetEnvironmentVariable($rota.Variable, [NullString]::Value)
         }
         Restore-PlanoCredencialEnv -Guardadas $guardadas
+        if ($pintou) { Reset-PlanoCorAba }
     }
 }
 
@@ -2054,14 +2091,17 @@ function New-RoutingLines {
         $lines.Add('    )')
     }
 
-    foreach ($campo in @('Dir', 'Label', 'Color')) {
+    # TabColor e' opcional: plano sem ela nao pinta a aba.
+    foreach ($campo in @('Dir', 'Label', 'Color', 'TabColor')) {
         $lines.Add("    $campo = @{")
         foreach ($entry in $Profile) {
             if (-not (Test-MapProperty -InputObject $entry -Name 'side')) { continue }
+            if ($campo -eq 'TabColor' -and -not (Test-MapProperty -InputObject $entry -Name 'tabColor')) { continue }
             $chave = "$($entry.side)|$($entry.shield)"
             $valor = switch ($campo) {
                 'Dir' { ConvertTo-GeneratedPath -Path ([string]$entry.home) }
                 'Label' { "'" + ([string]$entry.label).Replace("'", "''") + "'" }
+                'TabColor' { "'$([string]$entry.tabColor)'" }
                 default { "'$([string]$entry.color)'" }
             }
             $lines.Add("        '$chave' = $valor")

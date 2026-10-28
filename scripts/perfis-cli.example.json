@@ -8,6 +8,7 @@
       "slug": "pessoal-aberto",
       "label": "PESSOAL",
       "color": "Yellow",
+      "tabColor": "#B58900",
       "home": "D:\\perfis\\ana\\.claude-pessoal",
       "side": "pessoal",
       "shield": "aberto"
@@ -17,6 +18,7 @@
       "slug": "pessoal-blindado",
       "label": "PESSOAL BLINDADO",
       "color": "Yellow",
+      "tabColor": "#B58900",
       "home": "D:\\repos\\.claude-escopo-pessoal",
       "side": "pessoal",
       "shield": "blindado"
@@ -26,6 +28,7 @@
       "slug": "trabalho-aberto",
       "label": "TRABALHO",
       "color": "Cyan",
+      "tabColor": "#0087AF",
       "home": "D:\\perfis\\ana\\.claude",
       "side": "trabalho",
       "shield": "aberto"
@@ -35,6 +38,7 @@
       "slug": "trabalho-blindado",
       "label": "TRABALHO BLINDADO",
       "color": "Cyan",
+      "tabColor": "#2E8B57",
       "home": "D:\\repos\\.claude-escopo-trabalho",
       "side": "trabalho",
       "shield": "blindado"

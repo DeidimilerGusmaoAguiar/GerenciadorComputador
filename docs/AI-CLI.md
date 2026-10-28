@@ -432,6 +432,27 @@ Garantias que o script mantém:
 - `-BlockOutPath` grava só o bloco gerado num arquivo à parte, para revisar ou
   testar antes de encostar em qualquer perfil.
 
+### Cor da aba por plano
+
+Cada perfil com `side` pode declarar `tabColor` (`#RRGGBB`), além da `color` de
+console. Quando um comando de plano — `PlanoPessoal`, `PlanoCorporativo`,
+`PlanoDev`, `Planos` ou o `claude` que decide pela pasta — abre a CLI dentro do
+Windows Terminal, a aba ganha a cor daquele plano. Quando a CLI sai, a aba volta
+à cor que tinha antes.
+
+Isso não depende de qual perfil do Terminal abriu a aba. Rodar `PlanoCorporativo`
+numa aba genérica, ou numa aba de outro plano, pinta a aba com a cor do plano que
+está de fato no ar.
+
+O código gerado usa duas sequências de controle:
+
+- `OSC 4` grava a cor exata no índice 100 da paleta;
+- `DECAC` (`CSI 2;15;100,|`) aponta a moldura da aba para esse índice.
+
+Na saída, `CSI 2;263;264,|` devolve a moldura aos índices padrão do Terminal, e
+`OSC 104;100` restaura o índice 100. Fora do Terminal (sem `WT_SESSION`) ou com a
+saída redirecionada nada é emitido. Perfil sem `tabColor` não pinta a aba.
+
 Perfil novo é uma linha no mapa e uma nova execução. Para o antimalware nada
 precisa ser declarado duas vezes: `scripts\report-exclusion-coverage.ps1`
 descobre os diretórios pela mesma convenção de nome, então um perfil recém-criado
