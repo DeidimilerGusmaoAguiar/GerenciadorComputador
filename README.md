@@ -8,6 +8,63 @@ O projeto combina scripts reutilizáveis com instruções portáveis para Codex
 CLI, Claude Code, Gemini CLI e Grok Build. Os scripts podem ser usados sem uma
 CLI de IA.
 
+## O que dá para fazer
+
+| Para | Use | Detalhes |
+|---|---|---|
+| Descobrir para onde foi o espaço em disco | mapas de disco e inventários | [Início rápido](#início-rápido) |
+| Limpar `bin`/`obj`, pastas temporárias antigas e resíduo de teste no `%TEMP%` | manifesto, revisão e remoção revalidada | [Artefatos de build](#artefatos-de-build), [Varredura diária](#varredura-diária-do-temp) |
+| Entender por que a máquina está lenta | painel Pulso, coleta de memória e de desempenho | [Painel](#painel-de-pressão-em-runtime), [Memória](#memória) |
+| Medir o custo do Docker/WSL2 e do antivírus | relatórios de pressão do Docker e de cobertura das exclusões | [docs/DOCKER-WSL2.md](docs/DOCKER-WSL2.md) |
+| Auditar inicialização, serviços e bloatware | agentes do Claude Code com aprovação por item | [Com o Claude Code](#primeiros-passos-com-o-claude-code) |
+| Trocar de computador sem perder o que não está no Git | inventário de migração e conferência de runbook | [Troca de máquina](#troca-de-máquina) |
+| Manter várias contas da mesma CLI de IA | perfis gerados, histórico comum, cor da aba por plano | [Várias contas](#várias-contas-da-mesma-cli-de-ia) |
+| Regravar a senha de domínio dos pools do IIS | regravação sem a senha passar por log ou arquivo | [IIS](#iis-senha-de-domínio-dos-app-pools) |
+
+Nada disso altera o computador sem você pedir: cada script que muda algo roda
+em simulação até receber `-Execute`.
+
+## Primeiros passos com o Claude Code
+
+```powershell
+git clone <endereço deste repositório>
+cd GerenciadorComputador
+claude
+```
+
+Na primeira sessão, `/context` deve listar o `CLAUDE.md`, que importa as regras
+de [AGENTS.md](AGENTS.md). A partir daí, peça em linguagem natural:
+
+- "o disco está quase cheio, descubra para onde foi o espaço";
+- "a máquina está lenta, o que está pesando agora?";
+- "o que inicia com o Windows e pode sair?";
+- "abra o painel de pressão".
+
+O agente sempre inspeciona primeiro, apresenta o plano com risco e bytes
+estimados e só altera depois do seu "pode" para aquela categoria. Num computador
+que não está no mapa local (`local\maquinas.json`, que não vem no clone), ele
+trabalha somente em leitura e pergunta antes da primeira alteração.
+
+O repositório traz seis agentes, que o Claude Code chama sozinho ou quando você
+os cita pelo nome:
+
+| Agente | Faz | Altera o sistema? |
+|---|---|---|
+| `disk-investigator` | Mapeia maiores pastas, arquivos e caches | Não |
+| `performance-analyst` | Diagnostica CPU, RAM, E/S, GPU e rede | Não |
+| `disk-cleaner` | Executa uma limpeza já aprovada, com quarentena | Só com aprovação |
+| `startup-auditor` | Audita inicialização, serviços e tarefas agendadas | Só com aprovação |
+| `bloatware-hunter` | Inventaria aplicativos removíveis | Só com aprovação, por nome |
+| `restore-guardian` | Cria e lista pontos de restauração | Só com aprovação |
+
+E duas skills, somente leitura: `/custo-varredura` mostra o que o antivírus está
+varrendo e quanto isso custa; `/pressao-docker` mede o Docker e a VM do WSL2.
+
+`.claude\settings.json` libera os comandos de leitura e pede confirmação para
+os que alteram o sistema (`Remove-Item`, `Stop-Process`, serviços, registro,
+`wsl --shutdown`, `docker prune`). Essa camada é uma rede a mais: a regra que
+vale é a aprovação explícita descrita em `AGENTS.md`.
+
 ## Princípios de segurança
 
 - Operações destrutivas usam dry-run por padrão.
@@ -261,6 +318,61 @@ pwsh -NoProfile -File .\scripts\new-cleanup-checkpoint.ps1 `
   -Execute
 ```
 
+## Troca de máquina
+
+O que está num remoto não precisa de backup; o que só existe naquela máquina
+precisa, e essa parte é sempre maior do que parece.
+`report-migration-inventory.ps1` varre as raízes atrás de repositórios e mede,
+em cada um, os commits fora de qualquer remoto e os arquivos ignorados que
+importam. A varredura é somente leitura, serializada e retomável:
+
+```powershell
+pwsh -NoProfile -File .\scripts\report-migration-inventory.ps1 -Raiz C:\Projetos
+pwsh -NoProfile -File .\scripts\report-migration-inventory.ps1 -Retomar
+```
+
+Runbook de migração envelhece em dias. `Test-RunbookClaims.ps1` compara as
+afirmações de um runbook (versões, distros, volumes, contagens) com a máquina
+atual e lista o que divergiu, antes de alguém executar um passo baseado nelas.
+
+As lições de uma migração real, com checklist, estão em
+[docs/MIGRACAO-DE-MAQUINA.md](docs/MIGRACAO-DE-MAQUINA.md).
+
+## Várias contas da mesma CLI de IA
+
+Quem usa mais de uma conta da mesma CLI (pessoal e trabalho, por exemplo) separa
+cada uma num diretório de estado próprio. `sync-cli-profiles.ps1` gera, a partir
+de um mapa local, os comandos que escolhem a conta (`PlanoPessoal`,
+`PlanoTrabalho`...), as rotas por pasta e as abas do Windows Terminal, igual nos
+perfis do PowerShell 7 e do 5.1. Cada plano pode ter uma cor de aba: ao abrir a
+CLI, a aba ganha a cor do plano no ar e, ao sair, volta à cor anterior.
+
+Os scripts ao redor:
+
+- `unify-plan-sessions.ps1` junta o histórico dos planos num armazém comum,
+  para que `claude -r` e a memória do projeto enxerguem as sessões de todos,
+  sem juntar as contas;
+- `creditos-resumo.ps1` mostra lado a lado plano, crédito de API e crédito de
+  nuvem;
+- `nuvem-credito.ps1` lança sessão na nuvem com teto e registro por projeto.
+
+É a parte mais específica do repositório e não é necessária para o resto.
+Formato do mapa em [scripts/perfis-cli.example.json](scripts/perfis-cli.example.json);
+explicação completa em [docs/AI-CLI.md](docs/AI-CLI.md#perfis-isolados-da-mesma-cli).
+
+## IIS: senha de domínio dos app pools
+
+Pool do IIS que roda com conta de domínio guarda a senha. Quando a senha muda, o
+pool passa a falhar com o evento 5021 e HTTP 503, o que parece aplicação
+quebrada. `Set-AppPoolIdentity.ps1` mostra quais pools usam conta de domínio e,
+com `-Execute` num terminal elevado, pede a credencial e regrava a identidade sem
+a senha passar por linha de comando, arquivo em claro ou log:
+
+```powershell
+pwsh -NoProfile -File .\scripts\Set-AppPoolIdentity.ps1             # mostra
+pwsh -NoProfile -File .\scripts\Set-AppPoolIdentity.ps1 -Execute    # regrava
+```
+
 ## Scripts públicos
 
 | Script | Função | Altera o sistema? |
@@ -289,6 +401,13 @@ pwsh -NoProfile -File .\scripts\new-cleanup-checkpoint.ps1 `
 | `report-docker-pressure.ps1` | Pressão do Docker/WSL2: estado do motor (inclusive afogado), consumo por container, tetos e VHDX | Não |
 | `report-testcontainers-leak.ps1` | Denúncia de containers de Testcontainers vazados e de motor Docker sem resposta | Não |
 | `remove-pressure-history.ps1` | Dry-run ou aplicação da retenção do histórico do painel | Só com `-Execute` |
+| `report-migration-inventory.ps1` | O que só existe nesta máquina: commits fora de remoto e arquivos ignorados | Não |
+| `Test-RunbookClaims.ps1` | Confere as afirmações de um runbook contra a máquina atual | Não |
+| `sync-cli-profiles.ps1` | Gera comandos, rotas e abas das CLIs de IA a partir de um mapa | Só com `-Execute` |
+| `unify-plan-sessions.ps1` | Junta o histórico dos planos de IA num armazém comum | Só com `-Execute` |
+| `creditos-resumo.ps1` | Plano, crédito de API e crédito de nuvem lado a lado | Não |
+| `nuvem-credito.ps1` | Lança sessão na nuvem com teto e registro por projeto | Só com `-Execute` |
+| `Set-AppPoolIdentity.ps1` | Regrava a identidade de domínio dos pools do IIS | Só com `-Execute` |
 
 A compactação de VHDX do Docker não é automatizada: ela exige interromper
 Docker/WSL e pode derrubar shells, containers e CLIs.
@@ -299,7 +418,14 @@ Estes diretórios existem no workspace, mas seu conteúdo não entra no Git:
 
 - `reports\`: inventários e logs da máquina;
 - `quarantine\`: arquivos preservados antes de uma exclusão;
-- `local\`: scripts legados ou snapshots específicos do operador.
+- `local\`: configuração e snapshots específicos do operador.
+
+Em `local\` ficam dois arquivos que os agentes e o teste leem quando existem:
+
+- `maquinas.json`, o mapa das máquinas: papel de cada uma, o que já foi feito
+  nela e o que é proibido ali. Sem ele, todo computador é tratado como
+  desconhecido e o agente trabalha somente em leitura até você liberar;
+- `termos-proibidos.txt`, os nomes que nunca podem chegar a um commit público.
 
 Nunca force a inclusão desses arquivos em um commit público.
 
@@ -315,8 +441,16 @@ pwsh -NoProfile -File .\tests\Test-PressureDashboard.ps1
 Ele valida sintaxe PowerShell, arquivos obrigatórios, caminhos pessoais,
 referências corporativas, adaptadores das quatro CLIs e gates dos scripts que
 podem alterar o sistema. Nas mensagens dos commits que ainda não estão em
-nenhum remoto, confere os mesmos termos locais, caminhos e credenciais. O segundo teste valida as regras de pressão e executa
-uma única coleta integrada, somente leitura.
+nenhum remoto, confere os mesmos termos locais, caminhos e credenciais. O
+segundo teste valida as regras de pressão e executa uma única coleta integrada,
+somente leitura.
+
+O primeiro teste também roda antes de cada `git push`. O hook não vem no clone;
+ative uma vez por clone:
+
+```powershell
+git config core.hooksPath .githooks
+```
 
 ## Contribuição e licença
 
