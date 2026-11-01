@@ -1,0 +1,19 @@
+{
+  "name": "guarda-comandos",
+  "version": "0.1.0",
+  "description": "Pergunta antes de encerrar processo, desligar WSL/Docker/maquina ou apagar recursivo fora das pastas de trabalho, e recusa os comandos proibidos do AGENTS.md, mesmo com permissoes puladas.",
+  "userConfig": {
+    "pastasTrabalho": {
+      "type": "string",
+      "title": "Pastas de trabalho",
+      "description": "Separadas por ';'. Apagar recursivo dentro delas nao pergunta. A pasta do projeto da sessao e o %TEMP% ja contam.",
+      "default": ""
+    },
+    "pastasFora": {
+      "type": "string",
+      "title": "Pastas fora da guarda",
+      "description": "Separadas por ';'. Sessao aberta dentro delas fica sem a guarda (um repositorio com guarda propria).",
+      "default": ""
+    }
+  }
+}

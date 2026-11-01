@@ -1,0 +1,6 @@
+{
+  "name": "saude-maquina",
+  "version": "0.1.0",
+  "description": "Faixa acima do prompt com commit, RAM disponivel, disco do sistema e memoria do Windows Terminal, amarela ou vermelha nos limites do AGENTS.md.",
+  "types": "./types/index.d.ts"
+}

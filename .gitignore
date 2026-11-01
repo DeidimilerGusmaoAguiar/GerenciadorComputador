@@ -29,6 +29,9 @@ CLAUDE.local.md
 *.p12
 *.kdbx
 
+# Tipos que o Claude Code grava ao carregar um mod
+/mods/*/.claude-plugin/types/
+
 # PowerShell e cobertura
 TestResults/
 coverage/

@@ -428,7 +428,7 @@ foreach ($file in $powerShellFiles) {
 
 $publicFiles = [Collections.Generic.List[IO.FileInfo]]::new()
 foreach ($directory in @(
-    'scripts', '.claude', '.github', '.githooks', 'dashboard', 'docs', 'tests'
+    'scripts', '.claude', '.github', '.githooks', 'dashboard', 'docs', 'tests', 'mods'
 )) {
     $path = Join-Path $repoRoot $directory
     if (Test-Path -LiteralPath $path) {
