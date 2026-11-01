@@ -19,6 +19,9 @@ CLI de IA.
 | Auditar inicialização, serviços e bloatware | agentes do Claude Code com aprovação por item | [Com o Claude Code](#primeiros-passos-com-o-claude-code) |
 | Trocar de computador sem perder o que não está no Git | inventário de migração e conferência de runbook | [Troca de máquina](#troca-de-máquina) |
 | Manter várias contas da mesma CLI de IA | perfis gerados, histórico comum, cor da aba por plano | [Várias contas](#várias-contas-da-mesma-cli-de-ia) |
+| Ver plano, cota e saúde da máquina em toda sessão do Claude Code | barra de status e faixa de saúde | [docs/CLAUDE-CODE-MODS.md](docs/CLAUDE-CODE-MODS.md) |
+| Pedir confirmação antes de comando perigoso, mesmo com permissões puladas | regras do `settings.json` e mod de guarda | [docs/CLAUDE-CODE-MODS.md](docs/CLAUDE-CODE-MODS.md#guarda-de-comandos-guarda-comandos) |
+| Rodar build ou teste pesado um por vez, com teto de CPU e memória | runner com Job Object | [docs/TRABALHO-PESADO.md](docs/TRABALHO-PESADO.md) |
 | Regravar a senha de domínio dos pools do IIS | regravação sem a senha passar por log ou arquivo | [IIS](#iis-senha-de-domínio-dos-app-pools) |
 
 Nada disso altera o computador sem você pedir: cada script que muda algo roda
@@ -354,7 +357,9 @@ Os scripts ao redor:
   sem juntar as contas;
 - `creditos-resumo.ps1` mostra lado a lado plano, crédito de API e crédito de
   nuvem;
-- `nuvem-credito.ps1` lança sessão na nuvem com teto e registro por projeto.
+- `nuvem-credito.ps1` lança sessão na nuvem com teto e registro por projeto;
+- `set-statusline.ps1` grava em cada diretório de estado a barra de status com o plano e a
+  cota ([docs/CLAUDE-CODE-MODS.md](docs/CLAUDE-CODE-MODS.md)).
 
 É a parte mais específica do repositório e não é necessária para o resto.
 Formato do mapa em [scripts/perfis-cli.example.json](scripts/perfis-cli.example.json);
@@ -407,6 +412,8 @@ pwsh -NoProfile -File .\scripts\Set-AppPoolIdentity.ps1 -Execute    # regrava
 | `unify-plan-sessions.ps1` | Junta o histórico dos planos de IA num armazém comum | Só com `-Execute` |
 | `creditos-resumo.ps1` | Plano, crédito de API e crédito de nuvem lado a lado | Não |
 | `nuvem-credito.ps1` | Lança sessão na nuvem com teto e registro por projeto | Só com `-Execute` |
+| `set-statusline.ps1` | Grava a barra de status (`statusline.py`) no `settings.json` de cada plano | Só com `-Execute` |
+| `Invoke-TrabalhoPesado.ps1` | Roda um comando pesado por vez, com teto de CPU e memória | Não; roda o comando dado |
 | `Set-AppPoolIdentity.ps1` | Regrava a identidade de domínio dos pools do IIS | Só com `-Execute` |
 
 A compactação de VHDX do Docker não é automatizada: ela exige interromper
